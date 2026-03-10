@@ -4,18 +4,20 @@ import asyncio
 import json
 from typing import Optional, Dict, Any, Union
 from curl_cffi import requests
-from bs4 import BeautifulSoup
+from selectolax.parser import HTMLParser
+from lxml import html as lxml_html
 from .proxies import ProxyManager
 
 class ScraplyResponse:
     """Enhanced response envelope that wraps a raw HTTP response.
     It automatically detects content types to provide pre-parsed JSON data
-    or high-level BeautifulSoup objects directly on the response."""
+    or high-level DOM traversal objects directly on the response."""
     
     def __init__(self, original_response: requests.Response):
         self._response = original_response
         self._parsed_json = None
         self._parsed_html = None
+        self._parsed_lxml = None
         self._auto_parse()
 
     def _auto_parse(self):
@@ -27,14 +29,16 @@ class ScraplyResponse:
                 pass
         elif "text/html" in content_type:
             try:
-                self._parsed_html = BeautifulSoup(self._response.text, "html.parser")
+                self._parsed_html = HTMLParser(self._response.text)
+                
+                self._parsed_lxml = lxml_html.fromstring(self._response.text)
             except Exception:
                 pass
 
     @property
     def auto(self) -> Any:
         """Dynamically retrieves the most useful version of the response.
-        It returns a dictionary for JSON APIs and a BeautifulSoup object
+        It returns a dictionary for JSON APIs and a selectolax HTMLParser object
         for HTML pages without any manual parsing required."""
         if self._parsed_json is not None:
             return self._parsed_json
@@ -43,11 +47,17 @@ class ScraplyResponse:
         return self._response.text
 
     @property
-    def html(self) -> Optional[BeautifulSoup]:
-        """Provides a native BeautifulSoup tree for HTML responses.
-        Perfect for quick DOM traversal and data extraction using
-        standard CSS selectors or tag searches."""
+    def html(self) -> Optional[HTMLParser]:
+        """Provides a native selectolax HTMLParser for HTML responses.
+        Perfect for lightning-fast DOM traversal and data extraction 
+        using standard CSS selectors."""
         return self._parsed_html
+
+    @property
+    def lxml(self):
+        """Provides a native lxml HtmlElement for HTML responses.
+        Perfect for complex data extraction using powerful XPath queries."""
+        return self._parsed_lxml
         
     @property
     def data(self) -> Optional[Dict]:

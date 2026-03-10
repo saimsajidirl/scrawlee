@@ -6,7 +6,8 @@ An ultimate stealth scraping library built on top of `curl_cffi` with advanced p
 
 - **Ultimate Stealth**: Rotates through real-world TLS/JA3 fingerprints (Chrome, Edge, Safari).
 - **Asynchronous Engine**: Comes with `AsyncScraplyClient` for blazing fast, highly-concurrent scraping using `asyncio`.
-- **Auto-Parsing Response**: The `.auto` property automatically returns a parsed Python dictionary or a `BeautifulSoup` object depending on whether the response is JSON or HTML.
+- **Auto-Parsing Response**: The `.auto` property automatically returns a parsed Python dictionary or a high-speed `selectolax` object depending on whether the response is JSON or HTML.
+- **Dual-Parser Support**: Fetch lightning-fast CSS queries via `.html` (Selectolax) or utilize robust XPath querying via `.lxml` (lxml).
 - **Cookie Persistence**: Instantly save and load authenticated sessions to disk so you never have to log in or solve Cloudflare challenges twice.
 - **Smart Retries**: Built-in exponential backoff for common HTTP error codes (429, 50x).
 - **Advanced Proxy Management**: Supports Random, Round-Robin, and Sticky session rotation with off-band automated health checks.
@@ -31,11 +32,46 @@ with ScraplyClient(impersonate="chrome120") as client:
     print(res.auto['headers']['User-Agent'])
     
     res_html = client.get("https://httpbin.org/html")
-    # .auto magically returns a BeautifulSoup object for HTML responses!
-    print(res_html.auto.find("h1").text)
+    
+    # Lightning fast CSS queries via selectolax
+    print(res_html.html.css_first("h1").text(strip=True))
+    
+    # Powerful XPath queries via lxml
+    print(res_html.lxml.xpath("//h1/text()")[0])
 ```
 
-### 2. High-Speed Asynchronous Scraping
+### 2. Deep Dive: Extracting Data from HTML
+Scraply eliminates the need for external parsing libraries like BeautifulSoup. It comes natively packed with two blazing-fast, C-based parsing engines:
+
+#### Extracting with CSS Selectors (via `.html`)
+The `.html` property exposes the `selectolax` engine. It is the fastest way to parse data using standard CSS selectors.
+```python
+with ScraplyClient() as client:
+    res = client.get("https://example-store.com/products")
+    
+    # 1. Extract text from a single element
+    title = res.html.css_first("h1.product-title").text(strip=True)
+    
+    # 2. Extract HTML attributes (e.g. data-id, href, src)
+    product_id = res.html.css_first("div.product").attributes.get("data-product-id")
+    
+    # 3. Loop through lists of elements
+    for feature_li in res.html.css("ul.features li"):
+        print("Feature:", feature_li.text(strip=True))
+```
+
+#### Extracting with XPath Queries (via `.lxml`)
+If you need complex DOM traversal (e.g., finding a parent element based on its child's value), CSS selectors fall short. The `.lxml` property provides industry-standard XPath extraction.
+```python
+with ScraplyClient() as client:
+    res = client.get("https://example-store.com/products")
+    
+    # Fetch an element exactly using an XPath query
+    price = res.lxml.xpath('//div[@class="product-card" and @data-status="in-stock"]//span[@class="price"]/text()')[0]
+    print(f"Price is: {price}")
+```
+
+### 3. High-Speed Asynchronous Scraping
 If you need to scrape 1,000 pages concurrently, use `AsyncScraplyClient`.
 ```python
 import asyncio
@@ -53,7 +89,7 @@ async def run():
 asyncio.run(run())
 ```
 
-### 3. Persistent Sessions (Save/Load Cookies)
+### 4. Persistent Sessions (Save/Load Cookies)
 If you bypass a Datadome/Cloudflare wall or log into a website, save your cookies to disk so you can instantly resume the session tomorrow!
 ```python
 from scraply import ScraplyClient
@@ -69,7 +105,7 @@ with ScraplyClient() as client:
     res = client.get("https://api.twitter.com/protected_route")
 ```
 
-### 4. Advanced Proxy Management
+### 5. Advanced Proxy Management
 Automatically rotates Proxies and quarantines failing ones.
 ```python
 from scraply import ScraplyClient, ProxyManager
