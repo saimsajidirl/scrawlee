@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scraply"
+version = "0.1.0"
+description = "An ultimate stealth scraping library with advanced proxy rotation and auto-parsing."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "curl_cffi>=0.7.1",
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.sdist]
+include = ["scraply"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["scraply"]
