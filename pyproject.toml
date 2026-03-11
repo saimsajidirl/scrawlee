@@ -3,11 +3,23 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "scraply"
+name = "scrawlee"
 version = "0.1.0"
 description = "An ultimate stealth scraping library with advanced proxy rotation and auto-parsing."
 readme = "README.md"
+authors = [
+    { name = "Muhammad Saim", email = "saimsajidirl@gmail.com" }
+]
 requires-python = ">=3.8"
+license = { file = "LICENSE" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
 dependencies = [
     "curl_cffi>=0.7.1",
     "selectolax>=0.3.17",
@@ -17,10 +29,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "build",
+    "twine"
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["scraply"]
+include = ["scrawlee"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["scraply"]
+packages = ["scrawlee"]
