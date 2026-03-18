@@ -8,7 +8,7 @@ from selectolax.parser import HTMLParser
 from lxml import html as lxml_html
 from .proxies import ProxyManager
 
-class ScraplyResponse:
+class ScrawleeResponse:
     """Enhanced response envelope that wraps a raw HTTP response.
     It automatically detects content types to provide pre-parsed JSON data
     or high-level DOM traversal objects directly on the response."""
@@ -73,7 +73,7 @@ class ScraplyResponse:
         return getattr(self._response, name)
 
 
-class ScraplyClient:
+class ScrawleeClient:
     """The core scraping engine designed for maximum stealth and reliability.
     It combines advanced TLS fingerprinting with intelligent proxy rotation
     and automated retry logic to bypass modern anti-bot systems."""
@@ -114,7 +114,7 @@ class ScraplyClient:
             "Upgrade-Insecure-Requests": "1"
         })
 
-    def request(self, method: str, url: str, **kwargs) -> ScraplyResponse:
+    def request(self, method: str, url: str, **kwargs) -> ScrawleeResponse:
         """Executes a high-level network request with integrated fail-safes.
         It handles automatic proxy selection, exponential backoff for
         transient errors, and wraps the final result in an auto-parsing layer."""
@@ -133,7 +133,7 @@ class ScraplyClient:
                 if response.status_code in [429, 500, 502, 503, 504]:
                     raise requests.RequestsError(f"Transient Error: Status code {response.status_code}")
                     
-                return ScraplyResponse(response)
+                return ScrawleeResponse(response)
                 
             except Exception as e:
                 if current_proxy:
@@ -146,10 +146,10 @@ class ScraplyClient:
                 time.sleep(backoff_time + random.uniform(0, 1))
                 backoff_time *= 2
 
-    def get(self, url: str, **kwargs) -> ScraplyResponse:
+    def get(self, url: str, **kwargs) -> ScrawleeResponse:
         return self.request("GET", url, **kwargs)
         
-    def post(self, url: str, **kwargs) -> ScraplyResponse:
+    def post(self, url: str, **kwargs) -> ScrawleeResponse:
         return self.request("POST", url, **kwargs)
         
     def save_cookies(self, filepath: str):
@@ -179,9 +179,9 @@ class ScraplyClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-class AsyncScraplyClient:
+class AsyncScrawleeClient:
     """The asynchronous core scraping engine designed for high concurrency.
-    It mirrors the synchronous ScraplyClient but utilizes asyncio and
+    It mirrors the synchronous ScrawleeClient but utilizes asyncio and
     curl_cffi's AsyncSession to handle thousands of requests seamlessly."""
     
     STEALTH_BROWSERS = ["chrome110", "chrome120", "edge101", "safari15_5"]
@@ -219,7 +219,7 @@ class AsyncScraplyClient:
             "Upgrade-Insecure-Requests": "1"
         })
 
-    async def request(self, method: str, url: str, **kwargs) -> ScraplyResponse:
+    async def request(self, method: str, url: str, **kwargs) -> ScrawleeResponse:
         """Executes a high-level asynchronous network request with integrated fail-safes.
         It handles automatic proxy selection, exponential backoff for
         transient errors, and wraps the final result in an auto-parsing layer."""
@@ -237,7 +237,7 @@ class AsyncScraplyClient:
                 if response.status_code in [429, 500, 502, 503, 504]:
                     raise requests.RequestsError(f"Transient Error: Status code {response.status_code}")
                     
-                return ScraplyResponse(response)
+                return ScrawleeResponse(response)
                 
             except Exception as e:
                 if current_proxy:
@@ -250,10 +250,10 @@ class AsyncScraplyClient:
                 await asyncio.sleep(backoff_time + random.uniform(0, 1))
                 backoff_time *= 2
 
-    async def get(self, url: str, **kwargs) -> ScraplyResponse:
+    async def get(self, url: str, **kwargs) -> ScrawleeResponse:
         return await self.request("GET", url, **kwargs)
         
-    async def post(self, url: str, **kwargs) -> ScraplyResponse:
+    async def post(self, url: str, **kwargs) -> ScrawleeResponse:
         return await self.request("POST", url, **kwargs)
         
     def save_cookies(self, filepath: str):
