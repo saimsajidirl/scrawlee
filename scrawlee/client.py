@@ -2,10 +2,11 @@ import time
 import random
 import asyncio
 import json
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Iterable, Tuple, Type
 from curl_cffi import requests
 from selectolax.parser import HTMLParser
 from lxml import html as lxml_html
+from loguru import logger
 from .proxies import ProxyManager
 
 class ScrawleeResponse:
@@ -85,11 +86,19 @@ class ScrawleeClient:
         proxy_manager: Optional[ProxyManager] = None,
         max_retries: int = 3,
         impersonate: str = "random",
-        timeout: int = 30
+        timeout: int = 30,
+        retry_status_codes: Optional[Iterable[int]] = None,
+        retry_exceptions: Optional[Tuple[Type[BaseException], ...]] = None,
+        retry_backoff_base: float = 1.0,
+        retry_jitter_max: float = 1.0
     ):
         self.proxy_manager = proxy_manager or ProxyManager()
         self.max_retries = max_retries
         self.timeout = timeout
+        self.retry_status_codes = set(retry_status_codes or [429, 500, 502, 503, 504])
+        self.retry_exceptions = retry_exceptions or (Exception,)
+        self.retry_backoff_base = retry_backoff_base
+        self.retry_jitter_max = retry_jitter_max
         
         if impersonate == "random":
             self.impersonate = random.choice(self.STEALTH_BROWSERS)
@@ -120,30 +129,46 @@ class ScrawleeClient:
         transient errors, and wraps the final result in an auto-parsing layer."""
 
         retries = 0
-        backoff_time = 1.0
+        backoff_time = self.retry_backoff_base
 
         while retries <= self.max_retries:
             current_proxy = self.proxy_manager.get_proxy()
             if current_proxy:
                 kwargs["proxies"] = current_proxy
+                logger.debug("Request {} {} via proxy {}", method, url, current_proxy.get("http"))
+            else:
+                logger.debug("Request {} {} without proxy", method, url)
             
             try:
                 response = self.session.request(method, url, **kwargs)
                 
-                if response.status_code in [429, 500, 502, 503, 504]:
-                    raise requests.RequestsError(f"Transient Error: Status code {response.status_code}")
+                if response.status_code in self.retry_status_codes:
+                    raise requests.RequestsError(
+                        f"Retryable status code {response.status_code} for {method} {url}"
+                    )
                     
                 return ScrawleeResponse(response)
                 
-            except Exception as e:
+            except self.retry_exceptions as e:
                 if current_proxy:
                     self.proxy_manager.mark_failed(current_proxy)
                     
                 retries += 1
                 if retries > self.max_retries:
+                    logger.error("Max retries reached for {} {}. Last error: {}", method, url, str(e))
                     raise Exception(f"Max retries reached for {url}. Last error: {str(e)}")
+                logger.warning(
+                    "Retry {}/{} for {} {} after error: {}",
+                    retries,
+                    self.max_retries,
+                    method,
+                    url,
+                    str(e),
+                )
                     
-                time.sleep(backoff_time + random.uniform(0, 1))
+                sleep_for = backoff_time + random.uniform(0, self.retry_jitter_max)
+                logger.debug("Sleeping {:.2f}s before retrying {} {}", sleep_for, method, url)
+                time.sleep(sleep_for)
                 backoff_time *= 2
 
     def get(self, url: str, **kwargs) -> ScrawleeResponse:
@@ -151,6 +176,21 @@ class ScrawleeClient:
         
     def post(self, url: str, **kwargs) -> ScrawleeResponse:
         return self.request("POST", url, **kwargs)
+
+    def put(self, url: str, **kwargs) -> ScrawleeResponse:
+        return self.request("PUT", url, **kwargs)
+
+    def patch(self, url: str, **kwargs) -> ScrawleeResponse:
+        return self.request("PATCH", url, **kwargs)
+
+    def delete(self, url: str, **kwargs) -> ScrawleeResponse:
+        return self.request("DELETE", url, **kwargs)
+
+    def head(self, url: str, **kwargs) -> ScrawleeResponse:
+        return self.request("HEAD", url, **kwargs)
+
+    def options(self, url: str, **kwargs) -> ScrawleeResponse:
+        return self.request("OPTIONS", url, **kwargs)
         
     def save_cookies(self, filepath: str):
         """Saves current session cookies to a JSON file for future persistence."""
@@ -191,11 +231,19 @@ class AsyncScrawleeClient:
         proxy_manager: Optional[ProxyManager] = None,
         max_retries: int = 3,
         impersonate: str = "random",
-        timeout: int = 30
+        timeout: int = 30,
+        retry_status_codes: Optional[Iterable[int]] = None,
+        retry_exceptions: Optional[Tuple[Type[BaseException], ...]] = None,
+        retry_backoff_base: float = 1.0,
+        retry_jitter_max: float = 1.0
     ):
         self.proxy_manager = proxy_manager or ProxyManager()
         self.max_retries = max_retries
         self.timeout = timeout
+        self.retry_status_codes = set(retry_status_codes or [429, 500, 502, 503, 504])
+        self.retry_exceptions = retry_exceptions or (Exception,)
+        self.retry_backoff_base = retry_backoff_base
+        self.retry_jitter_max = retry_jitter_max
         
         if impersonate == "random":
             self.impersonate = random.choice(self.STEALTH_BROWSERS)
@@ -224,30 +272,46 @@ class AsyncScrawleeClient:
         It handles automatic proxy selection, exponential backoff for
         transient errors, and wraps the final result in an auto-parsing layer."""
         retries = 0
-        backoff_time = 1.0
+        backoff_time = self.retry_backoff_base
 
         while retries <= self.max_retries:
             current_proxy = self.proxy_manager.get_proxy()
             if current_proxy:
                 kwargs["proxies"] = current_proxy
+                logger.debug("Async request {} {} via proxy {}", method, url, current_proxy.get("http"))
+            else:
+                logger.debug("Async request {} {} without proxy", method, url)
             
             try:
                 response = await self.session.request(method, url, **kwargs)
                 
-                if response.status_code in [429, 500, 502, 503, 504]:
-                    raise requests.RequestsError(f"Transient Error: Status code {response.status_code}")
+                if response.status_code in self.retry_status_codes:
+                    raise requests.RequestsError(
+                        f"Retryable status code {response.status_code} for {method} {url}"
+                    )
                     
                 return ScrawleeResponse(response)
                 
-            except Exception as e:
+            except self.retry_exceptions as e:
                 if current_proxy:
                     self.proxy_manager.mark_failed(current_proxy)
                     
                 retries += 1
                 if retries > self.max_retries:
+                    logger.error("Max retries reached for async {} {}. Last error: {}", method, url, str(e))
                     raise Exception(f"Max retries reached for {url}. Last error: {str(e)}")
+                logger.warning(
+                    "Async retry {}/{} for {} {} after error: {}",
+                    retries,
+                    self.max_retries,
+                    method,
+                    url,
+                    str(e),
+                )
                     
-                await asyncio.sleep(backoff_time + random.uniform(0, 1))
+                sleep_for = backoff_time + random.uniform(0, self.retry_jitter_max)
+                logger.debug("Async sleeping {:.2f}s before retrying {} {}", sleep_for, method, url)
+                await asyncio.sleep(sleep_for)
                 backoff_time *= 2
 
     async def get(self, url: str, **kwargs) -> ScrawleeResponse:
@@ -255,6 +319,21 @@ class AsyncScrawleeClient:
         
     async def post(self, url: str, **kwargs) -> ScrawleeResponse:
         return await self.request("POST", url, **kwargs)
+
+    async def put(self, url: str, **kwargs) -> ScrawleeResponse:
+        return await self.request("PUT", url, **kwargs)
+
+    async def patch(self, url: str, **kwargs) -> ScrawleeResponse:
+        return await self.request("PATCH", url, **kwargs)
+
+    async def delete(self, url: str, **kwargs) -> ScrawleeResponse:
+        return await self.request("DELETE", url, **kwargs)
+
+    async def head(self, url: str, **kwargs) -> ScrawleeResponse:
+        return await self.request("HEAD", url, **kwargs)
+
+    async def options(self, url: str, **kwargs) -> ScrawleeResponse:
+        return await self.request("OPTIONS", url, **kwargs)
         
     def save_cookies(self, filepath: str):
         """Saves current session cookies to a JSON file for future persistence."""

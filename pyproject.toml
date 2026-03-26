@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "scrawlee"
 version = "0.1.0"
-description = "An ultimate stealth scraping library with advanced proxy rotation and auto-parsing."
+description = "Stealth-focused scraping client with browser impersonation, proxy rotation, retries, and auto parsing."
 readme = "README.md"
 authors = [
     { name = "Muhammad Saim", email = "saimsajidirl@gmail.com" }
@@ -20,11 +20,14 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
+keywords = ["scraping", "web-scraping", "http-client", "proxy", "curl-cffi", "asyncio"]
 dependencies = [
     "curl_cffi>=0.7.1",
     "selectolax>=0.3.17",
     "lxml>=5.1.0",
+    "loguru>=0.7.2",
 ]
+
 
 [project.optional-dependencies]
 dev = [
