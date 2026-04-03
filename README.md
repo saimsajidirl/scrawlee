@@ -1,6 +1,9 @@
 # Scrawlee
 
-An ultimate stealth scraping library built on top of `curl_cffi` with advanced proxy rotation, auto-parsing for JSON/HTML, and built-in rate-limiting retries. Fully supports both synchronous AND highly-concurrent asynchronous scraping.
+**Scrawlee** is the package name on PyPI. It ships two Python modules:
+
+- **`scrawlee`**: stealth HTTP scraping with proxy rotation and auto-parsing
+- **`scrawleemation`**: Botasaurus-style decorators and utilities (automation workflows on top of `ScrawleeClient`)
 
 ## Key Features
 
@@ -117,4 +120,54 @@ pm.add_proxy(ip="12.34.56.78", port="8080", username="user", password="pwd")
 with ScrawleeClient(proxy_manager=pm) as client:
     res = client.get("https://api.myip.com")
     print("Masked IP:", res.auto['ip'])
+```
+
+## Botasaurus-style API (`scrawleemation` subpackage)
+
+### Decorators
+```python
+from scrawleemation import browser, request, task, Driver
+
+@browser(block_images=True, parallel=2)
+def scrape_title(driver: Driver, url):
+    driver.get(url)
+    return driver.get_text("title")
+
+@request(parallel=4)
+def fetch_status(client, url):
+    return client.get(url).status_code
+
+@task(parallel=3)
+def square(x):
+    return x * x
+```
+
+### Cache Utility
+```python
+from scrawleemation import Cache
+
+item = {"url": "https://example.com"}
+Cache.put("scrape_title", item, {"title": "Example"})
+print(Cache.has("scrape_title", item))
+print(Cache.get("scrape_title", item))
+```
+
+### Profiles Utility
+```python
+from scrawleemation import Profiles
+
+Profiles.set_profile("pikachu", {"country": "US"})
+print(Profiles.get_profile("pikachu"))
+```
+
+### Sitemap Utility
+```python
+from scrawleemation import Sitemap, Filters, Extractors
+
+links = (
+    Sitemap("https://example.com/sitemap.xml")
+    .filter(Filters.first_segment_not_equals(["privacy-policy"]))
+    .extract(Extractors.extract_link_upto_second_segment())
+    .write_links("example-links")
+)
 ```

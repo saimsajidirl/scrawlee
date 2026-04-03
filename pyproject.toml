@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "scrawlee"
 version = "0.1.0"
-description = "An ultimate stealth scraping library with advanced proxy rotation and auto-parsing."
+description = "Scrawlee: stealth HTTP client with proxies and parsing; includes scrawleemation (Botasaurus-style decorators and utilities)."
 readme = "README.md"
 authors = [
     { name = "Muhammad Saim", email = "saimsajidirl@gmail.com" }
@@ -24,6 +24,8 @@ dependencies = [
     "curl_cffi>=0.7.1",
     "selectolax>=0.3.17",
     "lxml>=5.1.0",
+    "beautifulsoup4>=4.12.3",
+    "loguru>=0.7.0",
 ]
 
 [project.optional-dependencies]
@@ -34,7 +36,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-include = ["scrawlee"]
+include = ["scrawlee", "scrawleemation"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["scrawlee"]
+packages = ["scrawlee", "scrawleemation"]
