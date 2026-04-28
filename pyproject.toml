@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "scrawlee"
-version = "0.1.0"
+version = "2.0.0"
 description = "Stealth-focused scraping client with browser impersonation, proxy rotation, retries, and auto parsing."
 readme = "README.md"
 authors = [
