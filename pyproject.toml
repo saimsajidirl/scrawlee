@@ -26,6 +26,8 @@ dependencies = [
     "selectolax>=0.3.17",
     "lxml>=5.1.0",
     "loguru>=0.7.2",
+    "botasaurus>=4.0.0",
+    "nodejs-bin>=18.0.0",
 ]
 
 
