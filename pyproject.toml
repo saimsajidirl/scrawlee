@@ -28,6 +28,7 @@ dependencies = [
     "loguru>=0.7.2",
     "botasaurus>=4.0.0",
     "nodejs-bin>=18.4.0a2",
+    "python-dotenv>=1.0.0",
 ]
 
 

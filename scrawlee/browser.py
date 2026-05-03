@@ -155,6 +155,7 @@ class BrowserClient:
         self._driver = None
         self._last_result: Any = None
         self._scrape_fn = None
+        self._pending_task = None
         self._setup(reuse_driver)
 
     # ------------------------------------------------------------------
@@ -180,13 +181,13 @@ class BrowserClient:
                 kwargs["tiny_profile"] = True
 
         @_bot_browser(**kwargs)
-        def _execute(driver: Driver, task_fn):
+        def _execute(driver: Driver, data):
             # Capture driver reference for .driver property
             self._driver = driver
             # Run the user-supplied task and store result via closure.
             # We deliberately do NOT return the value here so botasaurus
             # does not attempt to serialise it into an output/*.json file.
-            self._last_result = task_fn(driver)
+            self._last_result = self._pending_task(driver)
 
         self._scrape_fn = _execute
         logger.debug("BrowserClient configured: {}", kwargs)
@@ -242,7 +243,8 @@ class BrowserClient:
                 driver.get(url)
             return BrowserResponse(driver.page_html, url)
 
-        self._scrape_fn(_task)
+        self._pending_task = _task
+        self._scrape_fn()
         return self._last_result
 
     def fetch(self, url: str) -> BrowserResponse:
@@ -264,7 +266,8 @@ class BrowserClient:
             status = getattr(resp, "status_code", 200)
             return BrowserResponse(resp.text, url, status)
 
-        self._scrape_fn(_task)
+        self._pending_task = _task
+        self._scrape_fn()
         return self._last_result
 
     def run(self, task_fn) -> Any:
@@ -291,7 +294,8 @@ class BrowserClient:
             resp = client.run(search)
             results = resp.html.css(".result-title")
         """
-        self._scrape_fn(task_fn)
+        self._pending_task = task_fn
+        self._scrape_fn()
         return self._last_result
 
     def close(self) -> None:
