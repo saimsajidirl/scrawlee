@@ -10,11 +10,13 @@ from loguru import logger
 from .proxies import ProxyManager
 
 class ScrawleeResponse:
-    """Enhanced response envelope that wraps a raw HTTP response.
-    It automatically detects content types to provide pre-parsed JSON data
-    or high-level DOM traversal objects directly on the response."""
     
     def __init__(self, original_response: requests.Response):
+        """
+        Initializes the enhanced response envelope.
+        Stores the original requests response object.
+        Triggers automatic content type parsing immediately.
+        """
         self._response = original_response
         self._parsed_json = None
         self._parsed_html = None
@@ -22,6 +24,11 @@ class ScrawleeResponse:
         self._auto_parse()
 
     def _auto_parse(self):
+        """
+        Detects content type from response headers.
+        Attempts to parse JSON bodies automatically.
+        Attempts to parse HTML bodies into DOM trees.
+        """
         content_type = self._response.headers.get("Content-Type", "").lower()
         if "application/json" in content_type:
             try:
@@ -31,16 +38,17 @@ class ScrawleeResponse:
         elif "text/html" in content_type:
             try:
                 self._parsed_html = HTMLParser(self._response.text)
-                
                 self._parsed_lxml = lxml_html.fromstring(self._response.text)
             except Exception:
                 pass
 
     @property
     def auto(self) -> Any:
-        """Dynamically retrieves the most useful version of the response.
-        It returns a dictionary for JSON APIs and a selectolax HTMLParser object
-        for HTML pages without any manual parsing required."""
+        """
+        Retrieves the most useful parsed version.
+        Returns JSON dictionary if applicable.
+        Falls back to HTMLParser or raw text.
+        """
         if self._parsed_json is not None:
             return self._parsed_json
         if self._parsed_html is not None:
@@ -49,35 +57,41 @@ class ScrawleeResponse:
 
     @property
     def html(self) -> Optional[HTMLParser]:
-        """Provides a native selectolax HTMLParser for HTML responses.
-        Perfect for lightning-fast DOM traversal and data extraction 
-        using standard CSS selectors."""
+        """
+        Provides native selectolax HTMLParser.
+        Enables fast CSS selector DOM traversal.
+        Returns None if parsing previously failed.
+        """
         return self._parsed_html
 
     @property
     def lxml(self):
-        """Provides a native lxml HtmlElement for HTML responses.
-        Perfect for complex data extraction using powerful XPath queries."""
+        """
+        Provides native lxml HtmlElement.
+        Enables complex XPath data extraction.
+        Returns None if parsing previously failed.
+        """
         return self._parsed_lxml
         
     @property
     def data(self) -> Optional[Dict]:
-        """Exposes the parsed JSON body as a native Python dictionary.
-        This property is populated when the response headers indicate
-        an application/json content type."""
+        """
+        Exposes parsed JSON body dictionary.
+        Populated automatically for application/json responses.
+        Returns None if parsing previously failed.
+        """
         return self._parsed_json
 
     def __getattr__(self, name):
-        """Seamlessly delegates attribute access to the underlying response.
-        This ensures methods like status_code, url, and headers are
-        still available exactly like a standard requests object."""
+        """
+        Delegates attribute access to original response.
+        Ensures compatibility with standard requests objects.
+        Allows accessing status_code, url, and headers directly.
+        """
         return getattr(self._response, name)
 
 
 class ScrawleeClient:
-    """The core scraping engine designed for maximum stealth and reliability.
-    It combines advanced TLS fingerprinting with intelligent proxy rotation
-    and automated retry logic to bypass modern anti-bot systems."""
     
     STEALTH_BROWSERS = ["chrome110", "chrome120", "edge101", "safari15_5"]
     
@@ -92,6 +106,11 @@ class ScrawleeClient:
         retry_backoff_base: float = 1.0,
         retry_jitter_max: float = 1.0
     ):
+        """
+        Initializes the synchronous scraping engine client.
+        Configures proxy rotation and automatic retry logic.
+        Generates dynamic stealth headers for the session.
+        """
         self.proxy_manager = proxy_manager or ProxyManager()
         self.max_retries = max_retries
         self.timeout = timeout
@@ -109,10 +128,11 @@ class ScrawleeClient:
         self._generate_dynamic_headers()
 
     def _generate_dynamic_headers(self):
-        """Constructs organic-looking browser headers based on the active fingerprint.
-        It ensures that critical signals like language and fetch metadata
-        match the impersonated browser identity for perfect stealth."""
-
+        """
+        Constructs organic-looking browser request headers.
+        Matches language and metadata to impersonated identity.
+        Ensures perfect stealth against modern anti-bot systems.
+        """
         languages = ["en-US,en;q=0.9", "en-GB,en;q=0.9,en-US;q=0.8", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"]
         self.session.headers.update({
             "Accept-Language": random.choice(languages),
@@ -124,10 +144,11 @@ class ScrawleeClient:
         })
 
     def request(self, method: str, url: str, **kwargs) -> ScrawleeResponse:
-        """Executes a high-level network request with integrated fail-safes.
-        It handles automatic proxy selection, exponential backoff for
-        transient errors, and wraps the final result in an auto-parsing layer."""
-
+        """
+        Executes high-level synchronous network request safely.
+        Handles proxy rotation and exponential error backoff.
+        Wraps final result in auto-parsing response envelope.
+        """
         retries = 0
         backoff_time = self.retry_backoff_base
 
@@ -172,34 +193,77 @@ class ScrawleeClient:
                 backoff_time *= 2
 
     def get(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes a synchronous GET HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return self.request("GET", url, **kwargs)
         
     def post(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes a synchronous POST HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return self.request("POST", url, **kwargs)
 
     def put(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes a synchronous PUT HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return self.request("PUT", url, **kwargs)
 
     def patch(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes a synchronous PATCH HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return self.request("PATCH", url, **kwargs)
 
     def delete(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes a synchronous DELETE HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return self.request("DELETE", url, **kwargs)
 
     def head(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes a synchronous HEAD HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return self.request("HEAD", url, **kwargs)
 
     def options(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes a synchronous OPTIONS HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return self.request("OPTIONS", url, **kwargs)
         
     def save_cookies(self, filepath: str):
-        """Saves current session cookies to a JSON file for future persistence."""
+        """
+        Saves current session cookies to file.
+        Persists authentication state for future sessions.
+        Writes data safely in JSON format locally.
+        """
         cookies_dict = self.session.cookies.get_dict()
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(cookies_dict, f, indent=4)
 
     def load_cookies(self, filepath: str):
-        """Loads session cookies from a JSON file to resume authenticated sessions."""
+        """
+        Loads session cookies from saved file.
+        Resumes previously authenticated scraping sessions.
+        Fails silently if cookie file is missing.
+        """
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 cookies_dict = json.load(f)
@@ -208,21 +272,30 @@ class ScrawleeClient:
             pass
         
     def close(self):
-        """Safely terminates the underlying network session and resources.
-        Best used when manual session management is required outside
-        of a standard context manager block."""
+        """
+        Terminates the underlying network session safely.
+        Releases allocated file descriptors and sockets.
+        Should be used when outside context managers.
+        """
         self.session.close()
 
     def __enter__(self):
+        """
+        Enters the context manager block gracefully.
+        Returns the current synchronous client instance.
+        Enables automatic cleanup upon context exit.
+        """
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Exits the context manager block gracefully.
+        Ensures the underlying network session closes.
+        Releases all held resources automatically safely.
+        """
         self.close()
 
 class AsyncScrawleeClient:
-    """The asynchronous core scraping engine designed for high concurrency.
-    It mirrors the synchronous ScrawleeClient but utilizes asyncio and
-    curl_cffi's AsyncSession to handle thousands of requests seamlessly."""
     
     STEALTH_BROWSERS = ["chrome110", "chrome120", "edge101", "safari15_5"]
     
@@ -237,6 +310,11 @@ class AsyncScrawleeClient:
         retry_backoff_base: float = 1.0,
         retry_jitter_max: float = 1.0
     ):
+        """
+        Initializes the asynchronous scraping engine client.
+        Configures proxy rotation and automatic retry logic.
+        Generates dynamic stealth headers for the session.
+        """
         self.proxy_manager = proxy_manager or ProxyManager()
         self.max_retries = max_retries
         self.timeout = timeout
@@ -254,9 +332,11 @@ class AsyncScrawleeClient:
         self._generate_dynamic_headers()
 
     def _generate_dynamic_headers(self):
-        """Constructs organic-looking browser headers based on the active fingerprint.
-        It ensures that critical signals like language and fetch metadata
-        match the impersonated browser identity for perfect stealth."""
+        """
+        Constructs organic-looking browser request headers.
+        Matches language and metadata to impersonated identity.
+        Ensures perfect stealth against modern anti-bot systems.
+        """
         languages = ["en-US,en;q=0.9", "en-GB,en;q=0.9,en-US;q=0.8", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"]
         self.session.headers.update({
             "Accept-Language": random.choice(languages),
@@ -268,9 +348,11 @@ class AsyncScrawleeClient:
         })
 
     async def request(self, method: str, url: str, **kwargs) -> ScrawleeResponse:
-        """Executes a high-level asynchronous network request with integrated fail-safes.
-        It handles automatic proxy selection, exponential backoff for
-        transient errors, and wraps the final result in an auto-parsing layer."""
+        """
+        Executes high-level asynchronous network request safely.
+        Handles proxy rotation and exponential error backoff.
+        Wraps final result in auto-parsing response envelope.
+        """
         retries = 0
         backoff_time = self.retry_backoff_base
 
@@ -315,34 +397,77 @@ class AsyncScrawleeClient:
                 backoff_time *= 2
 
     async def get(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes an asynchronous GET HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return await self.request("GET", url, **kwargs)
         
     async def post(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes an asynchronous POST HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return await self.request("POST", url, **kwargs)
 
     async def put(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes an asynchronous PUT HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return await self.request("PUT", url, **kwargs)
 
     async def patch(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes an asynchronous PATCH HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return await self.request("PATCH", url, **kwargs)
 
     async def delete(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes an asynchronous DELETE HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return await self.request("DELETE", url, **kwargs)
 
     async def head(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes an asynchronous HEAD HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return await self.request("HEAD", url, **kwargs)
 
     async def options(self, url: str, **kwargs) -> ScrawleeResponse:
+        """
+        Executes an asynchronous OPTIONS HTTP request.
+        Utilizes underlying stealth and retry logic.
+        Returns parsed ScrawleeResponse object natively.
+        """
         return await self.request("OPTIONS", url, **kwargs)
         
     def save_cookies(self, filepath: str):
-        """Saves current session cookies to a JSON file for future persistence."""
+        """
+        Saves current session cookies to file.
+        Persists authentication state for future sessions.
+        Writes data safely in JSON format locally.
+        """
         cookies_dict = self.session.cookies.get_dict()
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(cookies_dict, f, indent=4)
 
     def load_cookies(self, filepath: str):
-        """Loads session cookies from a JSON file to resume authenticated sessions."""
+        """
+        Loads session cookies from saved file.
+        Resumes previously authenticated scraping sessions.
+        Fails silently if cookie file is missing.
+        """
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 cookies_dict = json.load(f)
@@ -351,13 +476,25 @@ class AsyncScrawleeClient:
             pass
         
     async def close(self):
-        """Safely terminates the underlying asynchronous network session and resources.
-        Best used when manual session management is required outside
-        of a standard context manager block."""
+        """
+        Terminates the underlying asynchronous network session.
+        Releases allocated file descriptors and sockets securely.
+        Should be used when outside context managers.
+        """
         await self.session.close()
 
     async def __aenter__(self):
+        """
+        Enters the async context manager block gracefully.
+        Returns the current asynchronous client instance.
+        Enables automatic cleanup upon context exit.
+        """
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """
+        Exits the async context manager block gracefully.
+        Ensures the underlying network session closes.
+        Releases all held resources automatically safely.
+        """
         await self.close()
