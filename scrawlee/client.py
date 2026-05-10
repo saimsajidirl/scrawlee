@@ -30,7 +30,7 @@ class ScrawleeResponse:
         Attempts to parse HTML bodies into DOM trees.
         """
         content_type = self._response.headers.get("Content-Type", "").lower()
-        if "application/json" in content_type:
+        if "json" in content_type:
             try:
                 self._parsed_json = self._response.json()
             except Exception:
@@ -93,7 +93,13 @@ class ScrawleeResponse:
 
 class ScrawleeClient:
     
-    STEALTH_BROWSERS = ["chrome110", "chrome120", "edge101", "safari15_5"]
+    STEALTH_BROWSERS = [
+        "chrome120", "chrome124", "chrome129", "chrome131",
+        "edge120", "edge122", "edge131",
+        "safari17_0", "safari17_2", "safari17_5",
+        "firefox109", "firefox115", "firefox120",
+        "chrome99_android", "safari15_3_ios"
+    ]
     
     def __init__(
         self, 
@@ -104,12 +110,16 @@ class ScrawleeClient:
         retry_status_codes: Optional[Iterable[int]] = None,
         retry_exceptions: Optional[Tuple[Type[BaseException], ...]] = None,
         retry_backoff_base: float = 1.0,
-        retry_jitter_max: float = 1.0
+        retry_jitter_max: float = 1.0,
+        http2: bool = True,
+        verify: bool = True,
+        allow_redirects: bool = True
     ):
         """
         Initializes the synchronous scraping engine client.
         Configures proxy rotation and automatic retry logic.
         Generates dynamic stealth headers for the session.
+        Configures TLS fingerprinting and HTTP/2 support.
         """
         self.proxy_manager = proxy_manager or ProxyManager()
         self.max_retries = max_retries
@@ -118,13 +128,21 @@ class ScrawleeClient:
         self.retry_exceptions = retry_exceptions or (Exception,)
         self.retry_backoff_base = retry_backoff_base
         self.retry_jitter_max = retry_jitter_max
+        self.http2 = http2
+        self.verify = verify
+        self.allow_redirects = allow_redirects
         
         if impersonate == "random":
             self.impersonate = random.choice(self.STEALTH_BROWSERS)
         else:
             self.impersonate = impersonate
             
-        self.session = requests.Session(impersonate=self.impersonate, timeout=self.timeout)
+        self.session = requests.Session(
+            impersonate=self.impersonate,
+            timeout=self.timeout,
+            verify=self.verify,
+            allow_redirects=self.allow_redirects
+        )
         self._generate_dynamic_headers()
 
     def _generate_dynamic_headers(self):
@@ -133,15 +151,66 @@ class ScrawleeClient:
         Matches language and metadata to impersonated identity.
         Ensures perfect stealth against modern anti-bot systems.
         """
-        languages = ["en-US,en;q=0.9", "en-GB,en;q=0.9,en-US;q=0.8", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"]
-        self.session.headers.update({
+        languages = [
+            "en-US,en;q=0.9",
+            "en-GB,en;q=0.9,en-US;q=0.8",
+            "en-US,en;q=0.8,en-GB;q=0.6",
+            "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+            "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7"
+        ]
+        
+        sec_ch_ua = {
+            "chrome120": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "chrome124": '"Not_A Brand";v="8", "Chromium";v="124", "Google Chrome";v="124"',
+            "chrome129": '"Google Chrome";v="129", "Not_A Brand";v="8", "Chromium";v="129"',
+            "chrome131": '"Google Chrome";v="131", "Not_A Brand";v="8", "Chromium";v="131"',
+            "edge120": '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
+            "edge122": '"Not_A Brand";v="8", "Chromium";v="122", "Microsoft Edge";v="122"',
+            "edge131": '"Not_A Brand";v="8", "Chromium";v="131", "Microsoft Edge";v="131"',
+            "safari17_0": '"Not_A Brand";v="8", "Safari";v="17.0"',
+            "safari17_2": '"Not_A Brand";v="8", "Safari";v="17.2"',
+            "safari17_5": '"Not_A Brand";v="8", "Safari";v="17.5"',
+            "firefox109": '"Not_A Brand";v="8", "Firefox";v="109"',
+            "firefox115": '"Not_A Brand";v="8", "Firefox";v="115"',
+            "firefox120": '"Not_A Brand";v="8", "Firefox";v="120"',
+            "chrome99_android": '"Chromium";v="99", "Not_A Brand";v="8", "Google Chrome";v="99"',
+            "safari15_3_ios": '"Not_A Brand";v="8", "Safari";v="15.3"'
+        }
+        
+        sec_ch_ua_platform = {
+            "chrome120": '"Windows"',
+            "chrome124": '"Windows"',
+            "chrome129": '"Windows"',
+            "chrome131": '"Windows"',
+            "edge120": '"Windows"',
+            "edge122": '"Windows"',
+            "edge131": '"Windows"',
+            "safari17_0": '"macOS"',
+            "safari17_2": '"macOS"',
+            "safari17_5": '"macOS"',
+            "firefox109": '"Windows"',
+            "firefox115": '"Windows"',
+            "firefox120": '"Windows"',
+            "chrome99_android": '"Android"',
+            "safari15_3_ios": '"iOS"'
+        }
+        
+        headers = {
             "Accept-Language": random.choice(languages),
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1"
-        })
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Ch-Ua": sec_ch_ua.get(self.impersonate, '"Not_A Brand";v="8"'),
+            "Sec-Ch-Ua-Mobile": "?0" if "android" not in self.impersonate and "ios" not in self.impersonate else "?1",
+            "Sec-Ch-Ua-Platform": sec_ch_ua_platform.get(self.impersonate, '"Windows"'),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Cache-Control": "max-age=0"
+        }
+        
+        self.session.headers.update(headers)
 
     def request(self, method: str, url: str, **kwargs) -> ScrawleeResponse:
         """
@@ -297,7 +366,13 @@ class ScrawleeClient:
 
 class AsyncScrawleeClient:
     
-    STEALTH_BROWSERS = ["chrome110", "chrome120", "edge101", "safari15_5"]
+    STEALTH_BROWSERS = [
+        "chrome120", "chrome124", "chrome129", "chrome131",
+        "edge120", "edge122", "edge131",
+        "safari17_0", "safari17_2", "safari17_5",
+        "firefox109", "firefox115", "firefox120",
+        "chrome99_android", "safari15_3_ios"
+    ]
     
     def __init__(
         self, 
@@ -308,12 +383,16 @@ class AsyncScrawleeClient:
         retry_status_codes: Optional[Iterable[int]] = None,
         retry_exceptions: Optional[Tuple[Type[BaseException], ...]] = None,
         retry_backoff_base: float = 1.0,
-        retry_jitter_max: float = 1.0
+        retry_jitter_max: float = 1.0,
+        http2: bool = True,
+        verify: bool = True,
+        allow_redirects: bool = True
     ):
         """
         Initializes the asynchronous scraping engine client.
         Configures proxy rotation and automatic retry logic.
         Generates dynamic stealth headers for the session.
+        Configures TLS fingerprinting and HTTP/2 support.
         """
         self.proxy_manager = proxy_manager or ProxyManager()
         self.max_retries = max_retries
@@ -322,13 +401,21 @@ class AsyncScrawleeClient:
         self.retry_exceptions = retry_exceptions or (Exception,)
         self.retry_backoff_base = retry_backoff_base
         self.retry_jitter_max = retry_jitter_max
+        self.http2 = http2
+        self.verify = verify
+        self.allow_redirects = allow_redirects
         
         if impersonate == "random":
             self.impersonate = random.choice(self.STEALTH_BROWSERS)
         else:
             self.impersonate = impersonate
             
-        self.session = requests.AsyncSession(impersonate=self.impersonate, timeout=self.timeout)
+        self.session = requests.AsyncSession(
+            impersonate=self.impersonate,
+            timeout=self.timeout,
+            verify=self.verify,
+            allow_redirects=self.allow_redirects
+        )
         self._generate_dynamic_headers()
 
     def _generate_dynamic_headers(self):
@@ -337,15 +424,66 @@ class AsyncScrawleeClient:
         Matches language and metadata to impersonated identity.
         Ensures perfect stealth against modern anti-bot systems.
         """
-        languages = ["en-US,en;q=0.9", "en-GB,en;q=0.9,en-US;q=0.8", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"]
-        self.session.headers.update({
+        languages = [
+            "en-US,en;q=0.9",
+            "en-GB,en;q=0.9,en-US;q=0.8",
+            "en-US,en;q=0.8,en-GB;q=0.6",
+            "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+            "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7"
+        ]
+        
+        sec_ch_ua = {
+            "chrome120": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "chrome124": '"Not_A Brand";v="8", "Chromium";v="124", "Google Chrome";v="124"',
+            "chrome129": '"Google Chrome";v="129", "Not_A Brand";v="8", "Chromium";v="129"',
+            "chrome131": '"Google Chrome";v="131", "Not_A Brand";v="8", "Chromium";v="131"',
+            "edge120": '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
+            "edge122": '"Not_A Brand";v="8", "Chromium";v="122", "Microsoft Edge";v="122"',
+            "edge131": '"Not_A Brand";v="8", "Chromium";v="131", "Microsoft Edge";v="131"',
+            "safari17_0": '"Not_A Brand";v="8", "Safari";v="17.0"',
+            "safari17_2": '"Not_A Brand";v="8", "Safari";v="17.2"',
+            "safari17_5": '"Not_A Brand";v="8", "Safari";v="17.5"',
+            "firefox109": '"Not_A Brand";v="8", "Firefox";v="109"',
+            "firefox115": '"Not_A Brand";v="8", "Firefox";v="115"',
+            "firefox120": '"Not_A Brand";v="8", "Firefox";v="120"',
+            "chrome99_android": '"Chromium";v="99", "Not_A Brand";v="8", "Google Chrome";v="99"',
+            "safari15_3_ios": '"Not_A Brand";v="8", "Safari";v="15.3"'
+        }
+        
+        sec_ch_ua_platform = {
+            "chrome120": '"Windows"',
+            "chrome124": '"Windows"',
+            "chrome129": '"Windows"',
+            "chrome131": '"Windows"',
+            "edge120": '"Windows"',
+            "edge122": '"Windows"',
+            "edge131": '"Windows"',
+            "safari17_0": '"macOS"',
+            "safari17_2": '"macOS"',
+            "safari17_5": '"macOS"',
+            "firefox109": '"Windows"',
+            "firefox115": '"Windows"',
+            "firefox120": '"Windows"',
+            "chrome99_android": '"Android"',
+            "safari15_3_ios": '"iOS"'
+        }
+        
+        headers = {
             "Accept-Language": random.choice(languages),
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1"
-        })
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Ch-Ua": sec_ch_ua.get(self.impersonate, '"Not_A Brand";v="8"'),
+            "Sec-Ch-Ua-Mobile": "?0" if "android" not in self.impersonate and "ios" not in self.impersonate else "?1",
+            "Sec-Ch-Ua-Platform": sec_ch_ua_platform.get(self.impersonate, '"Windows"'),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Cache-Control": "max-age=0"
+        }
+        
+        self.session.headers.update(headers)
 
     async def request(self, method: str, url: str, **kwargs) -> ScrawleeResponse:
         """

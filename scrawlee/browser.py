@@ -1,5 +1,8 @@
 from typing import Any, Optional
+import random
+import time
 
+from curl_cffi import requests
 from lxml import html as lxml_html
 from loguru import logger
 from selectolax.parser import HTMLParser
@@ -81,6 +84,14 @@ class BrowserResponse:
 
 class BrowserClient:
 
+    STEALTH_BROWSERS = [
+        "chrome120", "chrome124", "chrome129", "chrome131",
+        "edge120", "edge122", "edge131",
+        "safari17_0", "safari17_2", "safari17_5",
+        "firefox109", "firefox115", "firefox120",
+        "chrome99_android", "safari15_3_ios"
+    ]
+
     def __init__(
         self,
         proxy: Optional[str] = None,
@@ -92,6 +103,9 @@ class BrowserClient:
         reuse_driver: bool = True,
         bypass_cloudflare: bool = False,
         via_google: bool = True,
+        impersonate: str = "random",
+        http2: bool = True,
+        wait: int = 0,
     ):
         """
         Initializes the anti-detect browser client.
@@ -106,6 +120,13 @@ class BrowserClient:
         self.tiny_profile = tiny_profile
         self.bypass_cloudflare = bypass_cloudflare
         self.via_google = via_google
+        self.http2 = http2
+        self.wait = wait
+        
+        if impersonate == "random":
+            self.impersonate = random.choice(self.STEALTH_BROWSERS)
+        else:
+            self.impersonate = impersonate
 
         self._driver = None
         self._last_result: Any = None
@@ -158,10 +179,18 @@ class BrowserClient:
         url: str,
         via_google: Optional[bool] = None,
         bypass_cloudflare: Optional[bool] = None,
+        wait: Optional[int] = None,
+        poll_for_cookie: Optional[str] = None,
+        poll_interval: float = 1.0,
+        poll_stable: int = 2,
     ) -> BrowserResponse:
         """
         Navigates to the specified target URL.
         Optionally uses a Google referrer for stealth.
+        Waits after navigation to allow JavaScript cookies to set.
+        If poll_for_cookie is given, polls driver cookies every poll_interval
+        seconds up to wait_time seconds, exiting early once the cookie value
+        remains unchanged for poll_stable consecutive checks.
         Returns a fully parsed browser response object.
         """
         use_google = via_google if via_google is not None else self.via_google
@@ -170,17 +199,110 @@ class BrowserClient:
             if bypass_cloudflare is not None
             else self.bypass_cloudflare
         )
+        wait_time = wait if wait is not None else self.wait
 
         def _task(driver):
             if use_google:
                 driver.google_get(url, bypass_cloudflare=use_bypass)
             else:
                 driver.get(url)
+            if wait_time:
+                if poll_for_cookie:
+                    last_value = None
+                    stable_count = 0
+                    elapsed = 0.0
+                    while elapsed < wait_time:
+                        cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
+                        current_value = cookies.get(poll_for_cookie)
+                        if current_value is not None and current_value == last_value:
+                            stable_count += 1
+                            if stable_count >= poll_stable:
+                                logger.debug(
+                                    "Cookie '{}' stable after {:.1f}s, stopping wait",
+                                    poll_for_cookie,
+                                    elapsed,
+                                )
+                                break
+                        else:
+                            stable_count = 1 if current_value is not None else 0
+                            last_value = current_value
+                        time.sleep(poll_interval)
+                        elapsed += poll_interval
+                else:
+                    logger.debug("Waiting {}s after navigation for cookies/JS to settle", wait_time)
+                    time.sleep(wait_time)
             return BrowserResponse(driver.page_html, url)
 
         self._pending_task = _task
         self._scrape_fn()
         return self._last_result
+
+    def _get_fingerprinting_headers(self) -> dict:
+        """
+        Generates browser fingerprinting headers for curl-cffi requests.
+        Matches headers to the impersonated browser type.
+        Ensures proper Sec-CH-UA and platform headers.
+        """
+        languages = [
+            "en-US,en;q=0.9",
+            "en-GB,en;q=0.9,en-US;q=0.8",
+            "en-US,en;q=0.8,en-GB;q=0.6",
+            "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+            "es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7"
+        ]
+        
+        sec_ch_ua = {
+            "chrome120": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "chrome124": '"Not_A Brand";v="8", "Chromium";v="124", "Google Chrome";v="124"',
+            "chrome129": '"Google Chrome";v="129", "Not_A Brand";v="8", "Chromium";v="129"',
+            "chrome131": '"Google Chrome";v="131", "Not_A Brand";v="8", "Chromium";v="131"',
+            "edge120": '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
+            "edge122": '"Not_A Brand";v="8", "Chromium";v="122", "Microsoft Edge";v="122"',
+            "edge131": '"Not_A Brand";v="8", "Chromium";v="131", "Microsoft Edge";v="131"',
+            "safari17_0": '"Not_A Brand";v="8", "Safari";v="17.0"',
+            "safari17_2": '"Not_A Brand";v="8", "Safari";v="17.2"',
+            "safari17_5": '"Not_A Brand";v="8", "Safari";v="17.5"',
+            "firefox109": '"Not_A Brand";v="8", "Firefox";v="109"',
+            "firefox115": '"Not_A Brand";v="8", "Firefox";v="115"',
+            "firefox120": '"Not_A Brand";v="8", "Firefox";v="120"',
+            "chrome99_android": '"Chromium";v="99", "Not_A Brand";v="8", "Google Chrome";v="99"',
+            "safari15_3_ios": '"Not_A Brand";v="8", "Safari";v="15.3"'
+        }
+        
+        sec_ch_ua_platform = {
+            "chrome120": '"Windows"',
+            "chrome124": '"Windows"',
+            "chrome129": '"Windows"',
+            "chrome131": '"Windows"',
+            "edge120": '"Windows"',
+            "edge122": '"Windows"',
+            "edge131": '"Windows"',
+            "safari17_0": '"macOS"',
+            "safari17_2": '"macOS"',
+            "safari17_5": '"macOS"',
+            "firefox109": '"Windows"',
+            "firefox115": '"Windows"',
+            "firefox120": '"Windows"',
+            "chrome99_android": '"Android"',
+            "safari15_3_ios": '"iOS"'
+        }
+        
+        headers = {
+            "Accept-Language": random.choice(languages),
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Ch-Ua": sec_ch_ua.get(self.impersonate, '"Not_A Brand";v="8"'),
+            "Sec-Ch-Ua-Mobile": "?0" if "android" not in self.impersonate and "ios" not in self.impersonate else "?1",
+            "Sec-Ch-Ua-Platform": sec_ch_ua_platform.get(self.impersonate, '"Windows"'),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Cache-Control": "max-age=0"
+        }
+        
+        return headers
 
     def fetch(self, url: str) -> BrowserResponse:
         """
@@ -188,14 +310,17 @@ class BrowserClient:
         Bypasses full rendering to save significant bandwidth.
         Returns a parsed browser response containing HTML.
         """
-        def _task(driver):
-            resp = driver.requests.get(url)
-            status = getattr(resp, "status_code", 200)
-            return BrowserResponse(resp.text, url, status)
-
-        self._pending_task = _task
-        self._scrape_fn()
-        return self._last_result
+        kwargs = {
+            "impersonate": self.impersonate
+        }
+        if self.proxy:
+            kwargs["proxies"] = {"http": self.proxy, "https": self.proxy}
+        
+        headers = self._get_fingerprinting_headers()
+        kwargs["headers"] = headers
+        
+        resp = requests.get(url, **kwargs)
+        return BrowserResponse(resp.text, url, resp.status_code)
 
     def run(self, task_fn) -> Any:
         """
