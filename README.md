@@ -183,7 +183,7 @@ BrowserClient.get(url)
 - **Exponential back-off with jitter** — Sleep time doubles on every retry (`retry_backoff_base * 2^n`) plus a random `uniform(0, retry_jitter_max)` offset to prevent thundering-herd on shared proxy pools.
 
 ### Response auto-parsing (`ScrawleeResponse`)
-- **Auto-detection** — Inspects the `Content-Type` response header and parses the body automatically.
+- **Auto-detection** — Inspects the `Content-Type` response header and parses the body automatically. Recognises all JSON subtypes (`application/json`, `application/hal+json`, etc.).
 - **`.auto` property** — Returns a Python `dict` for JSON APIs or a `selectolax.parser.HTMLParser` for HTML pages; falls back to the raw text string.
 - **`.data` property** — Exposes the parsed JSON body as a native Python `dict`.
 - **`.html` property** — Exposes a live `selectolax.parser.HTMLParser` for CSS selector-based DOM traversal.
@@ -760,6 +760,27 @@ with BrowserClient(via_google=True) as client:
     r = client.get("https://example.com/", via_google=False)
 ```
 
+#### Dynamic cookie polling with `poll_for_cookie`
+
+JavaScript-heavy sites often set authentication cookies (e.g. `cf_clearance`) asynchronously after the initial page load. Instead of sleeping for a fixed duration, `BrowserClient.get()` can poll the browser's cookie jar and exit early once a target cookie is present **and** its value has stabilized:
+
+```python
+from scrawlee import BrowserClient
+
+with BrowserClient(wait=60) as client:
+    # Polls for the 'cf_clearance' cookie every 1 second.
+    # If the cookie appears and stays unchanged for 2 consecutive checks,
+    # get() returns immediately — even if the 60-second timeout hasn't elapsed.
+    response = client.get(
+        "https://cloudflare-protected-site.com",
+        poll_for_cookie="cf_clearance",
+        poll_interval=1.0,   # seconds between checks
+        poll_stable=2,       # required stable reads before exit
+    )
+```
+
+This is useful for scraping sites that set session tokens via XHR after the DOM loads. The default `poll_interval` is `1.0` second and `poll_stable` is `2` — meaning the cookie must be present and unchanged for 2 consecutive polls.
+
 #### Low-bandwidth bulk scraping with `fetch()`
 
 `fetch()` uses the browser's **native fetch API** to retrieve subsequent pages without triggering a full navigation. No new page load, no DNS resolution, no TLS handshake — only the HTTP request body is transferred. Benchmarks show up to 97% bandwidth reduction compared to repeated `get()` calls.
@@ -1191,6 +1212,16 @@ pm.quarantine_time = 60  # 60 seconds
 ```python
 from loguru import logger
 logger.disable("scrawlee")
+```
+
+**Q: How do I wait for JavaScript cookies without wasting time?**
+
+Use `BrowserClient.get(..., poll_for_cookie="cookie_name")`. It polls the browser's cookie jar at `poll_interval` seconds and exits early once the cookie value stays stable for `poll_stable` consecutive checks. This avoids blind `time.sleep()` calls:
+
+```python
+with BrowserClient(wait=60) as client:
+    # Returns in ~3s if cookie stabilises, or after 60s if it never does
+    client.get(url, poll_for_cookie="session_token")
 ```
 
 **Q: Can I scrape HTTPS sites with self-signed certificates?**
