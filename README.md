@@ -2,7 +2,7 @@
 
 > **Most scrapers get blocked. Scrawlee doesn't.**
 >
-> While every other HTTP client announces itself through its TLS handshake, Scrawlee impersonates Chrome, Edge, and Safari at the network layer — the exact fingerprints anti-bot systems trust. It rotates and self-heals proxy pools, survives rate limits with exponential back-off, and hands you parsed data the instant a response lands. Hit a JavaScript wall or a Cloudflare challenge? One flag flips it to a full anti-detect Chrome instance that has bypassed Cloudflare, Datadome, and FingerprintJS in production. Built for engineers who are done fighting infrastructure and just want the data.
+> While every other HTTP client announces itself through its TLS handshake, Scrawlee impersonates Chrome, Edge, and Safari at the network layer — the exact fingerprints anti-bot systems trust. It rotates and self-heals proxy pools, survives rate limits with exponential back-off, and hands you parsed data the instant a response lands. Hit a JavaScript wall? One flag flips it to a real Chromium instance, stealth-patched via Playwright, with best-effort Cloudflare Turnstile handling. Built for engineers who are done fighting infrastructure and just want the data.
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -39,7 +39,7 @@ Modern websites defend themselves with a layered stack of bot-detection systems:
 
 It is a stealth-focused Python scraping library that impersonates real browser TLS fingerprints at the network level, generates matching browser-grade HTTP headers, rotates and quarantines proxies automatically, retries transient failures with exponential back-off, and wraps every response in an auto-parsing layer so you get typed JSON dictionaries or live DOM objects — never raw strings — without writing any parsing glue code yourself.
 
-When HTTP-level stealth is not enough, Scrawlee can drive a **real Chrome instance** through its `BrowserClient`, backed by the botasaurus anti-detect driver. This unlocks full JavaScript rendering, human-like interactions, Cloudflare JS-challenge solving, cookie persistence across sessions, and low-bandwidth fetch-API scraping — all through the same clean response interface.
+When HTTP-level stealth is not enough, Scrawlee can drive a **real Chromium instance** through its `BrowserClient`, backed by Playwright. This unlocks full JavaScript rendering, human-like interactions, best-effort Cloudflare Turnstile handling, cookie persistence across sessions, and low-bandwidth fetch-API scraping — all through the same clean response interface.
 
 ### Problems Scrawlee solves
 
@@ -50,8 +50,8 @@ When HTTP-level stealth is not enough, Scrawlee can drive a **real Chrome instan
 | IP bans and rate-limiting | `ProxyManager` with quarantine, automatic fail-over, and three rotation strategies |
 | Transient server errors | Configurable retry loop with exponential back-off and random jitter |
 | Manual JSON / HTML parsing | `ScrawleeResponse.auto` returns the right object for the content type |
-| JavaScript-rendered pages | `BrowserClient` drives a real Chrome with botasaurus anti-detect |
-| Cloudflare / Datadome WAFs | `BrowserClient(bypass_cloudflare=True)` engages botasaurus JS + Captcha solver |
+| JavaScript-rendered pages | `BrowserClient` drives a real Chromium instance via Playwright |
+| Cloudflare Turnstile challenges | `BrowserClient(bypass_cloudflare=True)` attempts a best-effort Turnstile click |
 | Bandwidth costs at scale | `BrowserClient.fetch()` uses the browser's native fetch API (up to 97% less data) |
 
 ---
@@ -106,28 +106,44 @@ BrowserClient.get(url)
        │
        ▼
 ┌──────────────────────────────────────────────────────────┐
-│  1. botasaurus @browser decorator                        │
-│     • Spawns or reuses a Chrome instance                 │
-│     • Applies anti-detect patches (WebGL, Canvas,        │
-│       navigator.webdriver = false, etc.)                 │
-│     • Configures proxy, profile, image blocking          │
+│  1. Identity + GeoIP resolution                            │
+│     • Picks (or reuses a pinned) fingerprints.Identity —   │
+│       one self-consistent UA/GPU/core-count/viewport combo │
+│     • If a proxy is set, resolves its exit IP's timezone/  │
+│       locale/lat-long via ipwho.is (best-effort, silent    │
+│       fallback on failure)                                 │
 └────────────────────────┬─────────────────────────────────┘
-                         │ Driver ready
+                         │
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  2. Driver.google_get(url) / Driver.get(url)             │
-│     • Navigates via Google referrer for stealth OR       │
-│       directly — depending on via_google flag            │
-│     • Optionally solves Turnstile / JS-challenge         │
-│       when bypass_cloudflare=True                        │
+│  2. Lazy Playwright launch (_ensure_driver)                │
+│     • Spawns or reuses a Chromium instance/context built   │
+│       from the identity + geo data                         │
+│     • Injects the stealth init script: navigator.webdriver,│
+│       hardwareConcurrency/deviceMemory, WebGL vendor/       │
+│       renderer, seeded canvas/audio noise, plugins, screen  │
+│     • Configures proxy, profile, image/CSS blocking         │
+│     • Loads this identity's auto-saved cookies (or an       │
+│       explicit profile's), if one exists locally            │
 └────────────────────────┬─────────────────────────────────┘
-                         │ driver.page_html (fully rendered)
+                         │ Page ready
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  3. BrowserResponse construction                         │
-│     • Passes rendered HTML to selectolax HTMLParser      │
-│     • Passes rendered HTML to lxml.html.fromstring       │
-│     • .html, .lxml, .text, .auto ready for extraction    │
+│  3. page.goto(url)                                        │
+│     • Navigates via Google referrer for stealth OR         │
+│       directly — depending on via_google flag              │
+│     • Best-effort Turnstile checkbox click when            │
+│       bypass_cloudflare=True                               │
+└────────────────────────┬─────────────────────────────────┘
+                         │ page.content() (fully rendered)
+                         ▼
+┌──────────────────────────────────────────────────────────┐
+│  4. BrowserResponse construction + auto profile save       │
+│     • Passes rendered HTML to selectolax HTMLParser         │
+│     • Passes rendered HTML to lxml.html.fromstring          │
+│     • .html, .lxml, .text, .auto ready for extraction       │
+│     • If the page doesn't look blocked, saves this          │
+│       identity's cookies locally for next run               │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -142,9 +158,8 @@ BrowserClient.get(url)
 | **[curl_cffi](https://github.com/yifeikong/curl-cffi)** | `>=0.7.1` | TLS impersonation + HTTP client | Binds to `libcurl` with BoringSSL to produce byte-exact TLS `ClientHello` messages that match real browser fingerprints. Standard `requests` / `httpx` use OpenSSL and produce a distinct fingerprint that anti-bot systems recognise immediately. |
 | **[selectolax](https://github.com/rushter/selectolax)** | `>=0.3.17` | Fast CSS selector HTML parsing | Written in C via Cython; benchmarks 10–50× faster than BeautifulSoup for DOM traversal. The natural choice for high-throughput HTML extraction. |
 | **[lxml](https://lxml.de/)** | `>=5.1.0` | XPath HTML parsing | The de-facto standard for complex XPath queries in Python. Complements selectolax by exposing the full XPath axis model for cases where CSS selectors are insufficient. |
-| **[loguru](https://github.com/Delgan/loguru)** | `>=0.7.2` | Structured logging | Zero-config, coloured, structured logging with no boilerplate. Provides debug, warning, and error output across proxy rotation and retry events without requiring users to configure Python's `logging` module. |botsaruruss is no toptional depencies its part of scrawlee as main
-| **[botasaurus](https://github.com/omkarcloud/botasaurus)** | `>=4.0.0` | Anti-detect Chrome automation | Wraps Playwright-managed Chrome with comprehensive anti-detection patches (Canvas, WebGL, navigator props, TLS JA3/JA4 normalization). Provides a `@browser` decorator that handles driver lifecycle, Google-referrer navigation, and built-in Cloudflare / Datadome bypass — far beyond what vanilla Playwright or Selenium offer. Part of Scrawlee's core — not optional. |
-| **[nodejs-bin](https://pypi.org/project/nodejs-bin/)** | `>=18.0.0` | Bundled Node.js runtime | Ships pre-compiled Node.js LTS binaries as a Python wheel. Installs the `node` executable directly into the virtualenv — no system-level Node.js install required. Botasaurus uses Node.js for its JavaScript-based Cloudflare challenge solver; bundling it here means `pip install scrawlee` is the only command a user ever needs. |
+| **[loguru](https://github.com/Delgan/loguru)** | `>=0.7.2` | Structured logging | Zero-config, coloured, structured logging with no boilerplate. Provides debug, warning, and error output across proxy rotation and retry events without requiring users to configure Python's `logging` module. |
+| **[playwright](https://playwright.dev/python/)** | `>=1.40.0` | Chromium browser automation | Drives a real, evergreen Chromium build with a first-class Python API. `BrowserClient` launches it lazily, rotates a self-consistent fingerprint identity (`scrawlee.fingerprints`), injects a canvas/WebGL/audio stealth script (`scrawlee.stealth`), and layers proxy/profile/image-blocking/GeoIP config on top. Part of Scrawlee's core — not optional. |
 
 ### Build tools
 
@@ -157,7 +172,7 @@ BrowserClient.get(url)
 ### Runtime requirements
 
 - Python **3.8+**
-- Node.js — installed automatically via `nodejs-bin` (bundled as a Python wheel; no separate system install required)
+- Chromium — installed via `playwright install chromium` after `pip install scrawlee` (see [Installation](#5-installation))
 
 ---
 
@@ -196,15 +211,23 @@ BrowserClient.get(url)
 - **Async context manager** — `async with AsyncScrawleeClient() as client:` correctly closes the `AsyncSession` with `await`.
 
 ### Browser automation (`BrowserClient`)
-- **Real Chrome, anti-detect patched** — Launches an actual Chrome instance via botasaurus with all standard bot-detection vectors suppressed (`navigator.webdriver`, Canvas noise, WebGL renderer masking, etc.).
-- **`get(url)`** — Full Chrome navigation; returns a `BrowserResponse` with selectolax and lxml parsers already populated.
+- **Real Chromium, stealth patched** — Launches an actual Chromium instance via Playwright with a stealth init script suppressing `navigator.webdriver`, and normalising `navigator.languages`/`navigator.plugins`/`window.chrome`.
+- **Rotating, self-consistent fingerprint identities** — Each session picks a `scrawlee.fingerprints.Identity`: one bundle of UA, `Sec-CH-UA` client hints, platform, core count, device memory, viewport/screen, and WebGL vendor/renderer that all describe the *same* imaginary machine. Layers are never mixed independently — a mismatched identity (e.g. a laptop UA with a 32-core hint) is more detectable than no spoofing at all. Pin one with `identity="chrome131_win_desktop"` or list them via `BrowserClient.available_identities()`.
+- **Canvas / WebGL / AudioContext noise** — The stealth script patches `getImageData`/`toDataURL`, `AudioBuffer.getChannelData`, and `getParameter` to return the identity's spoofed GPU strings plus small deterministic noise, seeded per identity so it's stable within and across sessions using that persona — real hardware doesn't change its canvas hash mid-visit.
+- **GeoIP-matched timezone/locale/geolocation** — When `proxy` is set and `geo_match=True` (default), the proxy's exit IP is resolved via a free lookup and used to set the browser context's `timezone_id`, `locale`, and `geolocation`, so the proxy's country and the browser's clock agree. Fails silently (falls back to the identity's defaults) if the lookup doesn't succeed.
+- **`get(url)`** — Full Chromium navigation; returns a `BrowserResponse` with selectolax and lxml parsers already populated.
 - **Google-referrer stealth** — `via_google=True` (default) routes the initial visit through a Google search referrer, passing referrer-policy checks on many sites.
-- **Cloudflare / Datadome bypass** — `bypass_cloudflare=True` engages botasaurus's JS + Captcha solver for Turnstile and JS-computation challenges.
-- **`fetch(url)`** — Uses the browser's built-in fetch API to retrieve subsequent pages without full navigation (up to 97% bandwidth reduction); inherits the established session and cookies.
-- **`run(task_fn)`** — Accepts any `(driver: Driver) -> Any` callable for arbitrary browser interactions: form submission, clicking, typing, scrolling, JS execution, iframe access, CDP commands, etc.
-- **Chrome profile persistence** — `profile="my_profile"` persists the full Chrome profile (~100 MB) or, with `tiny_profile=True`, a cookie-only lightweight variant (~1 KB).
-- **Driver reuse** — `reuse_driver=True` (default) keeps the Chrome instance alive between calls, eliminating per-request browser startup cost.
-- **Resource blocking** — `block_images=True` or `block_images_and_css=True` suppress unnecessary network requests to reduce bandwidth and speed up loads.
+- **Best-effort Cloudflare Turnstile handling** — `bypass_cloudflare=True` attempts to locate and click the Turnstile checkbox iframe. This is not a guaranteed solve — there is no bundled captcha-solving service.
+- **`fetch(url)`** — Uses the browser's built-in `fetch()` API to retrieve subsequent pages without full navigation (up to 97% bandwidth reduction); inherits the established session and cookies.
+- **`run(task_fn)`** — Accepts any `(driver: playwright.sync_api.Page) -> Any` callable for arbitrary browser interactions: form submission, clicking, typing, scrolling, JS execution, iframe access, CDP commands, etc.
+- **Chromium profile persistence** — `profile="my_profile"` persists the full Chromium user-data directory (via `launch_persistent_context`), or, with `tiny_profile=True`, a cookie-only lightweight variant saved as JSON.
+- **Automatic profile save-on-success** — Without an explicit `profile`, `auto_save_profile=True` (default) saves each identity's cookies locally after a `get()` call whose resulting page doesn't look blocked/challenged, and reloads them the next time that same identity launches — a working fingerprint keeps its session instead of starting cold every run.
+- **Driver reuse** — `reuse_driver=True` (default) keeps the Chromium instance alive between calls, eliminating per-request browser startup cost.
+- **Resource blocking** — `block_images=True` or `block_images_and_css=True` intercept requests via Playwright routing to suppress unnecessary network traffic.
+
+#### What this stealth engine does *not* do
+
+TLS/JA3/JA4 fingerprints, HTTP/2 frame ordering, and the installed-font list are determined by Chromium's compiled network and font stack — they sit below anything reachable from JavaScript or the Chrome DevTools Protocol, so no amount of `add_init_script` rotates them. `BrowserClient` always presents a genuine, unpatched Chromium's real TLS fingerprint rather than a spoofed one, which is actually the honest, consistent choice. CDP-based automation tells (like the `Runtime.enable` leak) are also outside what a page script can fix; if you need to close that specific gap, swap the `playwright.sync_api` import in `scrawlee/browser.py` for the API-compatible [`patchright`](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) package, which patches Chromium itself for exactly this.
 
 ### Cookie persistence
 - **`save_cookies(filepath)`** — Serialises all current session cookies to a JSON file.
@@ -216,9 +239,10 @@ BrowserClient.get(url)
 
 ```bash
 pip install scrawlee
+playwright install chromium
 ```
 
-Everything Scrawlee needs — including botasaurus and a bundled Node.js runtime — is installed automatically. No separate system-level installs are required. `BrowserClient` is ready to use immediately after `pip install scrawlee`.
+The `pip install` step pulls in Playwright along with Scrawlee's other dependencies. Playwright ships as a Python package but downloads its own Chromium binary separately, so `playwright install chromium` must be run once after installation before `BrowserClient` can launch a browser.
 
 ### From source
 
@@ -226,6 +250,7 @@ Everything Scrawlee needs — including botasaurus and a bundled Node.js runtime
 git clone https://github.com/<your-username>/scrawlee.git
 cd scrawlee
 pip install -e ".[dev]"
+playwright install chromium
 ```
 
 ---
@@ -709,7 +734,7 @@ asyncio.run(run())
 
 ### 6.5 Browser automation
 
-`BrowserClient` drives a real Chrome instance through the botasaurus anti-detect driver. It suppresses all standard bot-detection vectors — `navigator.webdriver`, Canvas fingerprinting, WebGL renderer leaks, font enumeration, TLS JA3/JA4 — before the page even loads. `BrowserClient` is a **core part of Scrawlee** and requires no extra install.
+`BrowserClient` drives a real Chromium instance through Playwright. It injects a stealth init script that suppresses `navigator.webdriver` and normalises `navigator.languages`/`navigator.plugins`/`window.chrome` before the page ever loads. `BrowserClient` is a **core part of Scrawlee**; it only requires that `playwright install chromium` was run once after installation (see [Installation](#5-installation)).
 
 #### Basic browser navigation
 
@@ -726,9 +751,9 @@ with BrowserClient() as client:
     print(links)
 ```
 
-#### Bypassing Cloudflare JS challenge and Turnstile
+#### Handling Cloudflare Turnstile
 
-`bypass_cloudflare=True` engages botasaurus's built-in JS + Captcha solver. It handles Turnstile challenges, JS computation challenges, and `cf_clearance` cookie acquisition automatically:
+`bypass_cloudflare=True` makes a best-effort attempt to locate the Turnstile challenge iframe and click its checkbox. Unlike a dedicated captcha-solving service, this is **not guaranteed** to pass every challenge — it only handles the simple "click to verify" Turnstile widget:
 
 ```python
 from scrawlee import BrowserClient
@@ -806,17 +831,17 @@ with BrowserClient(block_images=True) as client:
 
 #### Arbitrary interactions with `run()`
 
-`run()` accepts any `(driver: Driver) -> Any` callable. Use it when you need to type text, click buttons, scroll, hover, submit forms, execute JavaScript, interact with iframes, intercept requests at the CDP layer, or chain multi-step flows:
+`run()` accepts any `(driver: playwright.sync_api.Page) -> Any` callable — `driver` here is a native Playwright `Page`, so the full Playwright API (locators, `fill`, `click`, `evaluate`, iframe access, CDP sessions via `page.context.new_cdp_session()`, etc.) is available directly:
 
 ```python
 from scrawlee import BrowserClient, BrowserResponse
 
 # --- Example 1: search form submission ---
 def search_google(driver):
-    driver.type('textarea[name="q"]', "scrawlee python scraping")
-    driver.press_key('textarea[name="q"]', "Enter")
-    driver.short_random_sleep()           # human-like pause before reading DOM
-    return BrowserResponse(driver.page_html, driver.current_url)
+    driver.fill('textarea[name="q"]', "scrawlee python scraping")
+    driver.press('textarea[name="q"]', "Enter")
+    driver.wait_for_timeout(1000)           # human-like pause before reading DOM
+    return BrowserResponse(driver.content(), driver.url)
 
 with BrowserClient() as client:
     result = client.run(search_google)
@@ -827,13 +852,13 @@ with BrowserClient() as client:
 def scroll_to_bottom(driver):
     prev_height = 0
     while True:
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        driver.long_random_sleep()
-        new_height = driver.execute_script("return document.body.scrollHeight")
+        driver.evaluate("window.scrollTo(0, document.body.scrollHeight);")
+        driver.wait_for_timeout(1500)
+        new_height = driver.evaluate("document.body.scrollHeight")
         if new_height == prev_height:
             break
         prev_height = new_height
-    return BrowserResponse(driver.page_html, driver.current_url)
+    return BrowserResponse(driver.content(), driver.url)
 
 with BrowserClient() as client:
     client.get("https://example-infinite-scroll.com/feed")
@@ -843,11 +868,11 @@ with BrowserClient() as client:
 
 # --- Example 3: login then scrape dashboard ---
 def login(driver):
-    driver.type('#username', 'myuser@example.com')
-    driver.type('#password', 'mysecretpassword')
+    driver.fill('#username', 'myuser@example.com')
+    driver.fill('#password', 'mysecretpassword')
     driver.click('button[type="submit"]')
-    driver.wait_for_element('.dashboard-header', wait=15)  # wait up to 15s
-    return BrowserResponse(driver.page_html, driver.current_url)
+    driver.wait_for_selector('.dashboard-header', timeout=15000)  # wait up to 15s
+    return BrowserResponse(driver.content(), driver.url)
 
 with BrowserClient(tiny_profile=True, profile="my_account") as client:
     result = client.run(login)
@@ -866,31 +891,31 @@ with BrowserClient() as client:
     driver = client.driver
 
     # Execute arbitrary JS and read the return value
-    scroll_height = driver.execute_script("return document.body.scrollHeight")
+    scroll_height = driver.evaluate("document.body.scrollHeight")
     print(f"Page height: {scroll_height}px")
 
     # Manipulate the DOM
-    driver.execute_script(
+    driver.evaluate(
         "document.querySelectorAll('.cookie-banner').forEach(el => el.remove())"
     )
 
     # Extract data via JS (useful for values not in the HTML source)
-    local_storage = driver.execute_script(
-        "return JSON.stringify(Object.entries(localStorage))"
+    local_storage = driver.evaluate(
+        "JSON.stringify(Object.entries(localStorage))"
     )
     print(local_storage)
 
-    response = BrowserResponse(driver.page_html, driver.current_url)
+    response = BrowserResponse(driver.content(), driver.url)
     items = response.html.css(".item")
     print(f"{len(items)} items after DOM manipulation")
 ```
 
-#### Chrome profile persistence
+#### Chromium profile persistence
 
 Profiles allow you to persist authenticated state across script runs. On the first run you log in; on all subsequent runs Scrawlee picks up the saved session:
 
 ```python
-# Full profile (~100 MB per profile)
+# Full profile — a persistent Chromium user-data directory.
 # Stores cookies, localStorage, IndexedDB, sessionStorage, browser history.
 with BrowserClient(profile="amazon_account") as client:
     r = client.get("https://www.amazon.com/gp/css/order-history")
@@ -898,8 +923,8 @@ with BrowserClient(profile="amazon_account") as client:
     orders = r.html.css(".order-info")
     print(f"{len(orders)} orders found")
 
-# Tiny profile (~1 KB per profile)
-# Stores cookies only. Recommended when managing hundreds of accounts.
+# Tiny profile — cookies only, saved as a small JSON file.
+# Recommended when managing hundreds of accounts.
 with BrowserClient(profile="account_042", tiny_profile=True) as client:
     r = client.get("https://example.com/dashboard")
     print(r.html.css_first(".user-greeting").text())
@@ -912,36 +937,90 @@ with BrowserClient(profile="account_042", tiny_profile=True) as client:
 with BrowserClient(block_images=True) as client:
     r = client.get("https://example.com")   # 40–60% less bandwidth, same HTML
 
-# block_images_and_css — suppresses images and stylesheets
+# block_images_and_css — suppresses images, stylesheets, and fonts
 # Best for pure data extraction where visual rendering is irrelevant
 with BrowserClient(block_images_and_css=True) as client:
     r = client.get("https://example.com")   # up to 80% less bandwidth
 ```
 
-#### Accessing the raw botasaurus Driver
+#### Rotating and pinning fingerprint identities
 
-For capabilities not exposed by `get()`, `fetch()`, or `run()` — request interception, CDP commands, network condition simulation, cookie injection, etc. — access the `Driver` object directly after the first navigation:
+By default every `BrowserClient` picks a random, internally-consistent identity from the pool. List the available personas, or pin one explicitly when you need the same persona across multiple client instances:
+
+```python
+from scrawlee import BrowserClient
+
+print(BrowserClient.available_identities())
+# ('chrome120_win_desktop', 'chrome131_win_desktop', 'chrome124_win_laptop',
+#  'edge120_win_desktop', 'edge131_win_desktop', 'chrome_android_mobile')
+
+with BrowserClient(identity="chrome_android_mobile") as client:
+    r = client.get("https://example.com")
+    print(client.identity)   # "chrome_android_mobile"
+```
+
+#### GeoIP-matched timezone, locale, and geolocation
+
+When a proxy is configured, `geo_match=True` (the default) resolves that proxy's exit IP and aligns the browser's timezone/locale/`navigator.geolocation` with it — so a proxy in Germany doesn't show up next to a `Etc/UTC` clock:
+
+```python
+from scrawlee import BrowserClient
+
+with BrowserClient(proxy="http://user:pass@de-proxy-host:8080") as client:
+    r = client.get("https://example.com")
+    # The page's Intl.DateTimeFormat().resolvedOptions().timeZone will read
+    # something like "Europe/Berlin" instead of the machine's real timezone.
+
+# Disable if you'd rather keep the identity's static defaults
+with BrowserClient(proxy="http://proxy-host:8080", geo_match=False) as client:
+    r = client.get("https://example.com")
+```
+
+#### Automatic profile save-on-success
+
+Without an explicit `profile=`, each identity still keeps its own cookie jar under `~/.scrawlee/profiles/_auto/<identity>.json`, saved automatically after any `get()` call whose response doesn't look like a block/challenge page:
+
+```python
+from scrawlee import BrowserClient
+
+# First run: cold session, logs in via a normal flow, cookies get saved
+# automatically since the resulting page didn't look blocked.
+with BrowserClient(identity="chrome131_win_desktop") as client:
+    client.get("https://example.com/dashboard")
+
+# Later run, same identity: picks up the saved cookies automatically.
+with BrowserClient(identity="chrome131_win_desktop") as client:
+    r = client.get("https://example.com/dashboard")
+
+# Opt out entirely for a fully stateless run
+with BrowserClient(auto_save_profile=False) as client:
+    r = client.get("https://example.com")
+```
+
+#### Accessing the raw Playwright Page
+
+For capabilities not exposed by `get()`, `fetch()`, or `run()` — request interception, CDP commands, network condition simulation, cookie injection, etc. — access the `Page` object directly after the first navigation:
 
 ```python
 from scrawlee import BrowserClient, BrowserResponse
 
 with BrowserClient() as client:
     client.get("https://example.com")
-    driver = client.driver  # botasaurus Driver instance
+    driver = client.driver  # playwright.sync_api.Page instance
 
     # Scroll
-    driver.scroll_down()
-    driver.scroll_to_bottom()
+    driver.mouse.wheel(0, 800)
+    driver.evaluate("window.scrollTo(0, document.body.scrollHeight)")
 
     # Interact
     driver.click(".load-more-button")
     driver.hover('.tooltip-trigger')
 
     # Wait for dynamic content
-    driver.wait_for_element('.dynamic-results', wait=10)
+    driver.wait_for_selector('.dynamic-results', timeout=10000)
 
     # Read updated DOM
-    response = BrowserResponse(driver.page_html, driver.current_url)
+    response = BrowserResponse(driver.content(), driver.url)
     results = response.html.css(".result-card")
     print(f"{len(results)} results loaded")
 ```
@@ -1176,11 +1255,11 @@ You can merge cookies from multiple sources, remove expired entries, or inject t
 
 **Q: Does Scrawlee guarantee bypassing every anti-bot system?**
 
-No tool can make that guarantee. Bot detection is an arms race. Scrawlee's HTTP client (`ScrawleeClient`) is effective against TLS fingerprinting, IP bans, and rate-limiting. `BrowserClient` with `bypass_cloudflare=True` is effective against Cloudflare JS challenges and Turnstile CAPTCHAs. Highly sophisticated defences (image-based CAPTCHAs requiring human vision, fully dynamic JS obfuscation changed per-request) may require additional measures outside the scope of this library.
+No tool can make that guarantee. Bot detection is an arms race. Scrawlee's HTTP client (`ScrawleeClient`) is effective against TLS fingerprinting, IP bans, and rate-limiting. `BrowserClient` with `bypass_cloudflare=True` makes a best-effort attempt at simple Turnstile "click to verify" challenges, but it is not a captcha-solving service. Highly sophisticated defences (image-based CAPTCHAs requiring human vision, fully dynamic JS obfuscation changed per-request) require additional measures outside the scope of this library.
 
 **Q: When should I use `ScrawleeClient` vs `BrowserClient`?**
 
-Use `ScrawleeClient` when the target page's content is available in the raw HTTP response (i.e., it does not require JavaScript execution to render). It is 10–100× faster and uses far less memory than running Chrome. Switch to `BrowserClient` when the page renders its content with JavaScript, requires cookie/session state from an interactive flow, or is protected by a Cloudflare JS challenge.
+Use `ScrawleeClient` when the target page's content is available in the raw HTTP response (i.e., it does not require JavaScript execution to render). It is 10–100× faster and uses far less memory than running Chromium. Switch to `BrowserClient` when the page renders its content with JavaScript, requires cookie/session state from an interactive flow, or is protected by a Cloudflare Turnstile challenge.
 
 **Q: How do I handle rate limiting effectively?**
 
