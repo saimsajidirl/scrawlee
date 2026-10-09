@@ -1,19 +1,7 @@
 import json
 import zlib
-
 from .fingerprints import Identity
 
-# Covers the device/rendering/software layers that are actually reachable
-# from JS/CDP: navigator.webdriver, hardware/software properties, the
-# WebGL vendor/renderer strings, and canvas/audio noise. Noise is seeded per
-# identity (not per call) so a single persona stays internally consistent
-# across a session — real hardware doesn't change its canvas hash mid-visit.
-#
-# Out of scope by construction: TLS/JA3/JA4, HTTP/2 frame ordering, and the
-# installed-font list all come from Chromium's compiled network/font stack,
-# below anything this script can touch. CDP-based automation tells (e.g. the
-# Runtime.enable leak) also aren't fixable from inside the page — that needs
-# a patched Chromium build (e.g. the `patchright` project) instead.
 _TEMPLATE = r"""
 (() => {
   const seed = __SEED__;
