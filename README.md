@@ -1,5 +1,11 @@
 # Scrawlee
 
+> ## 📢 Want your service featured in Scrawlee?
+>
+> **If you want me to use your service, sponsor Scrawlee, or partner up — hit me up at [saimsajidirl@gmail.com](mailto:saimsajidirl@gmail.com)**
+>
+> Scrawlee will **recommend your service and ship a special, built-in option to use it** — with minimal code required from the developer.
+
 > **Most scrapers get blocked. Scrawlee doesn't.**
 >
 > While every other HTTP client announces itself through its TLS handshake, Scrawlee impersonates Chrome, Edge, and Safari at the network layer — the exact fingerprints anti-bot systems trust. It rotates and self-heals proxy pools, survives rate limits with exponential back-off, and hands you parsed data the instant a response lands. Hit a JavaScript wall? One flag flips it to a real Chromium instance, stealth-patched via Playwright, with best-effort Cloudflare Turnstile handling. Built for engineers who are done fighting infrastructure and just want the data.
