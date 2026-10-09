@@ -2,6 +2,8 @@ from typing import Any, Optional
 from pathlib import Path
 from urllib.parse import urlparse
 import asyncio
+import os
+import tempfile
 import time
 import json
 
@@ -35,6 +37,20 @@ _FETCH_SCRIPT = """async (args) => {
         return { text: '', status: null, error: String(error) };
     }
 }"""
+
+
+def _write_cookie_file(path: Path, cookies: Any) -> None:
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as file:
+            temporary_path = Path(file.name)
+            json.dump(cookies, file)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 class BrowserResponse:
@@ -129,8 +145,8 @@ class BrowserClient:
         impersonate: str = "random",
         identity: Optional[str] = None,
         stealth: bool = True,
-        geo_match: bool = True,
-        auto_save_profile: bool = True,
+        geo_match: bool = False,
+        auto_save_profile: bool = False,
         http2: bool = True,
         wait: int = 0,
     ):
@@ -217,19 +233,21 @@ class BrowserClient:
         else:
             route.continue_()
 
-    def _profile_dir(self) -> Path:
+    @staticmethod
+    def _profiles_base() -> Path:
         base = Path.home() / ".scrawlee" / "profiles"
-        base.mkdir(parents=True, exist_ok=True)
-        return base / self.profile
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return base
+
+    def _profile_dir(self) -> Path:
+        return self._profiles_base() / self.profile
 
     def _tiny_profile_path(self) -> Path:
-        base = Path.home() / ".scrawlee" / "profiles"
-        base.mkdir(parents=True, exist_ok=True)
-        return base / f"{self.profile}.tiny.json"
+        return self._profiles_base() / f"{self.profile}.tiny.json"
 
     def _auto_profile_path(self) -> Path:
-        base = Path.home() / ".scrawlee" / "profiles" / "_auto"
-        base.mkdir(parents=True, exist_ok=True)
+        base = self._profiles_base() / "_auto"
+        base.mkdir(mode=0o700, exist_ok=True)
         return base / f"{self._identity.key}.json"
 
     def _load_cookies(self, path: Path) -> None:
@@ -244,7 +262,7 @@ class BrowserClient:
 
     def _save_cookies(self, path: Path) -> None:
         try:
-            path.write_text(json.dumps(self._context.cookies()), encoding="utf-8")
+            _write_cookie_file(path, self._context.cookies())
         except Exception:
             logger.debug("Failed to save cookies to {}", path)
 
@@ -563,7 +581,7 @@ class AsyncBrowserClient(BrowserClient):
 
     async def _save_cookies(self, path: Path) -> None:
         try:
-            path.write_text(json.dumps(await self._context.cookies()), encoding="utf-8")
+            _write_cookie_file(path, await self._context.cookies())
         except Exception:
             logger.debug("Failed to save cookies to {}", path)
 

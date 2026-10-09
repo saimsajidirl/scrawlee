@@ -3,11 +3,26 @@ import random
 import asyncio
 import json
 from typing import Optional, Dict, Any, Iterable, Tuple, Type
-from curl_cffi import CurlHttpVersion, requests
+from curl_cffi import CurlECode, CurlHttpVersion, requests
 from selectolax.parser import HTMLParser
 from lxml import html as lxml_html
 from loguru import logger
 from .proxies import ProxyManager
+
+_RETRYABLE_CURL_CODES = {
+    CurlECode.COULDNT_RESOLVE_PROXY,
+    CurlECode.COULDNT_RESOLVE_HOST,
+    CurlECode.COULDNT_CONNECT,
+    CurlECode.OPERATION_TIMEDOUT,
+    CurlECode.GOT_NOTHING,
+    CurlECode.SEND_ERROR,
+    CurlECode.RECV_ERROR,
+}
+
+
+class _RetryableStatusError(requests.RequestsError):
+    pass
+
 
 class ScrawleeResponse:
     
@@ -15,30 +30,26 @@ class ScrawleeResponse:
         """
         Initializes the enhanced response envelope.
         Stores the original requests response object.
-        Triggers automatic content type parsing immediately.
+        Parses JSON immediately and defers HTML trees until requested.
         """
         self._response = original_response
+        self._content_type = original_response.headers.get("Content-Type", "").lower()
         self._parsed_json = None
         self._parsed_html = None
         self._parsed_lxml = None
+        self._html_parsed = False
+        self._lxml_parsed = False
         self._auto_parse()
 
     def _auto_parse(self):
         """
-        Detects content type from response headers.
+        Detects JSON content type from response headers.
         Attempts to parse JSON bodies automatically.
-        Attempts to parse HTML bodies into DOM trees.
+        Leaves HTML tree construction to the corresponding property.
         """
-        content_type = self._response.headers.get("Content-Type", "").lower()
-        if "json" in content_type:
+        if "json" in self._content_type:
             try:
                 self._parsed_json = self._response.json()
-            except Exception:
-                pass
-        elif "text/html" in content_type:
-            try:
-                self._parsed_html = HTMLParser(self._response.text)
-                self._parsed_lxml = lxml_html.fromstring(self._response.text)
             except Exception:
                 pass
 
@@ -51,9 +62,8 @@ class ScrawleeResponse:
         """
         if self._parsed_json is not None:
             return self._parsed_json
-        if self._parsed_html is not None:
-            return self._parsed_html
-        return self._response.text
+        parsed = self.html
+        return parsed if parsed is not None else self._response.text
 
     @property
     def html(self) -> Optional[HTMLParser]:
@@ -62,6 +72,12 @@ class ScrawleeResponse:
         Enables fast CSS selector DOM traversal.
         Returns None if parsing previously failed.
         """
+        if "text/html" in self._content_type and not self._html_parsed:
+            self._html_parsed = True
+            try:
+                self._parsed_html = HTMLParser(self._response.text)
+            except Exception:
+                pass
         return self._parsed_html
 
     @property
@@ -71,6 +87,12 @@ class ScrawleeResponse:
         Enables complex XPath data extraction.
         Returns None if parsing previously failed.
         """
+        if "text/html" in self._content_type and not self._lxml_parsed:
+            self._lxml_parsed = True
+            try:
+                self._parsed_lxml = lxml_html.fromstring(self._response.text)
+            except Exception:
+                pass
         return self._parsed_lxml
         
     @property
@@ -124,8 +146,9 @@ class ScrawleeClient:
         self.proxy_manager = proxy_manager or ProxyManager()
         self.max_retries = max_retries
         self.timeout = timeout
-        self.retry_status_codes = set(retry_status_codes or [429, 500, 502, 503, 504])
-        self.retry_exceptions = retry_exceptions or (Exception,)
+        self.retry_status_codes = set(retry_status_codes if retry_status_codes is not None else [429, 500, 502, 503, 504])
+        self.retry_exceptions = retry_exceptions if retry_exceptions is not None else (requests.RequestsError,)
+        self._retry_transient_only = retry_exceptions is None
         self.retry_backoff_base = retry_backoff_base
         self.retry_jitter_max = retry_jitter_max
         self.http2 = http2
@@ -234,20 +257,23 @@ class ScrawleeClient:
                 response = self.session.request(method, url, **kwargs)
                 
                 if response.status_code in self.retry_status_codes:
-                    raise requests.RequestsError(
+                    raise _RetryableStatusError(
                         f"Retryable status code {response.status_code} for {method} {url}"
                     )
                     
                 return ScrawleeResponse(response)
                 
-            except self.retry_exceptions as e:
+            except self.retry_exceptions + (_RetryableStatusError,) as e:
+                if self._retry_transient_only and not isinstance(e, _RetryableStatusError):
+                    if getattr(e, "code", None) not in _RETRYABLE_CURL_CODES:
+                        raise
                 if current_proxy:
                     self.proxy_manager.mark_failed(current_proxy)
-                    
+
                 retries += 1
                 if retries > self.max_retries:
                     logger.error("Max retries reached for {} {}. Last error: {}", method, url, str(e))
-                    raise Exception(f"Max retries reached for {url}. Last error: {str(e)}")
+                    raise
                 logger.warning(
                     "Retry {}/{} for {} {} after error: {}",
                     retries,
@@ -398,8 +424,9 @@ class AsyncScrawleeClient:
         self.proxy_manager = proxy_manager or ProxyManager()
         self.max_retries = max_retries
         self.timeout = timeout
-        self.retry_status_codes = set(retry_status_codes or [429, 500, 502, 503, 504])
-        self.retry_exceptions = retry_exceptions or (Exception,)
+        self.retry_status_codes = set(retry_status_codes if retry_status_codes is not None else [429, 500, 502, 503, 504])
+        self.retry_exceptions = retry_exceptions if retry_exceptions is not None else (requests.RequestsError,)
+        self._retry_transient_only = retry_exceptions is None
         self.retry_backoff_base = retry_backoff_base
         self.retry_jitter_max = retry_jitter_max
         self.http2 = http2
@@ -508,20 +535,23 @@ class AsyncScrawleeClient:
                 response = await self.session.request(method, url, **kwargs)
                 
                 if response.status_code in self.retry_status_codes:
-                    raise requests.RequestsError(
+                    raise _RetryableStatusError(
                         f"Retryable status code {response.status_code} for {method} {url}"
                     )
                     
                 return ScrawleeResponse(response)
                 
-            except self.retry_exceptions as e:
+            except self.retry_exceptions + (_RetryableStatusError,) as e:
+                if self._retry_transient_only and not isinstance(e, _RetryableStatusError):
+                    if getattr(e, "code", None) not in _RETRYABLE_CURL_CODES:
+                        raise
                 if current_proxy:
                     self.proxy_manager.mark_failed(current_proxy)
-                    
+
                 retries += 1
                 if retries > self.max_retries:
                     logger.error("Max retries reached for async {} {}. Last error: {}", method, url, str(e))
-                    raise Exception(f"Max retries reached for {url}. Last error: {str(e)}")
+                    raise
                 logger.warning(
                     "Async retry {}/{} for {} {} after error: {}",
                     retries,
