@@ -12,7 +12,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![PyPI version](https://img.shields.io/badge/version-0.1.0-green)](pyproject.toml)
+[![Project version](https://img.shields.io/badge/version-3.0.0-green)](pyproject.toml)
 
 ---
 
@@ -115,9 +115,9 @@ BrowserClient.get(url)
 │  1. Identity + GeoIP resolution                            │
 │     • Picks (or reuses a pinned) fingerprints.Identity —   │
 │       one self-consistent UA/GPU/core-count/viewport combo │
-│     • If a proxy is set, resolves its exit IP's timezone/  │
-│       locale/lat-long via ipwho.is (best-effort, silent    │
-│       fallback on failure)                                 │
+│     • With geo_match=True and a proxy, resolves timezone/ │
+│       locale/lat-long via ipwho.is (otherwise no lookup)  │
+│       and falls back to identity defaults on failure      │
 └────────────────────────┬─────────────────────────────────┘
                          │
                          ▼
@@ -129,8 +129,8 @@ BrowserClient.get(url)
 │       hardwareConcurrency/deviceMemory, WebGL vendor/       │
 │       renderer, seeded canvas/audio noise, plugins, screen  │
 │     • Configures proxy, profile, image/CSS blocking         │
-│     • Loads this identity's auto-saved cookies (or an       │
-│       explicit profile's), if one exists locally            │
+│     • Loads cookies only if an explicit profile or          │
+│       auto_save_profile=True is configured                  │
 └────────────────────────┬─────────────────────────────────┘
                          │ Page ready
                          ▼
@@ -144,12 +144,12 @@ BrowserClient.get(url)
                          │ page.content() (fully rendered)
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  4. BrowserResponse construction + auto profile save       │
+│  4. BrowserResponse construction + optional cookie save    │
 │     • Passes rendered HTML to selectolax HTMLParser         │
 │     • Passes rendered HTML to lxml.html.fromstring          │
 │     • .html, .lxml, .text, .auto ready for extraction       │
-│     • If the page doesn't look blocked, saves this          │
-│       identity's cookies locally for next run               │
+│     • Saves cookies only when auto_save_profile=True        │
+│       and the page doesn't look blocked                    │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -200,11 +200,11 @@ BrowserClient.get(url)
 
 ### Reliability
 - **Configurable retry loop** — `max_retries` (default 3) controls how many times a failing request is re-attempted.
-- **Configurable retry triggers** — `retry_status_codes` (default: `{429, 500, 502, 503, 504}`) and `retry_exceptions` (default: any `Exception`) determine what constitutes a retriable failure.
+- **Configurable retry triggers** — `retry_status_codes` (default: `{429, 500, 502, 503, 504}`) retries selected HTTP responses. By default, only transient curl network errors are retried; pass `retry_exceptions` to explicitly choose a broader or narrower exception policy. After retries are exhausted, the original exception type is preserved.
 - **Exponential back-off with jitter** — Sleep time doubles on every retry (`retry_backoff_base * 2^n`) plus a random `uniform(0, retry_jitter_max)` offset to prevent thundering-herd on shared proxy pools.
 
 ### Response auto-parsing (`ScrawleeResponse`)
-- **Auto-detection** — Inspects the `Content-Type` response header and parses the body automatically. Recognises all JSON subtypes (`application/json`, `application/hal+json`, etc.).
+- **Auto-detection** — Inspects the `Content-Type` response header. JSON is parsed immediately; HTML trees are built independently on first access to `.html`, `.lxml`, or `.auto`, so unused parsers incur no cost. Recognises all JSON subtypes (`application/json`, `application/hal+json`, etc.).
 - **`.auto` property** — Returns a Python `dict` for JSON APIs or a `selectolax.parser.HTMLParser` for HTML pages; falls back to the raw text string.
 - **`.data` property** — Exposes the parsed JSON body as a native Python `dict`.
 - **`.html` property** — Exposes a live `selectolax.parser.HTMLParser` for CSS selector-based DOM traversal.
@@ -220,14 +220,14 @@ BrowserClient.get(url)
 - **Real Chromium, stealth patched** — Launches an actual Chromium instance via Playwright with a stealth init script suppressing `navigator.webdriver`, and normalising `navigator.languages`/`navigator.plugins`/`window.chrome`.
 - **Rotating, self-consistent fingerprint identities** — Each session picks a `scrawlee.fingerprints.Identity`: one bundle of UA, `Sec-CH-UA` client hints, platform, core count, device memory, viewport/screen, and WebGL vendor/renderer that all describe the *same* imaginary machine. Layers are never mixed independently — a mismatched identity (e.g. a laptop UA with a 32-core hint) is more detectable than no spoofing at all. Pin one with `identity="chrome131_win_desktop"` or list them via `BrowserClient.available_identities()`.
 - **Canvas / WebGL / AudioContext noise** — The stealth script patches `getImageData`/`toDataURL`, `AudioBuffer.getChannelData`, and `getParameter` to return the identity's spoofed GPU strings plus small deterministic noise, seeded per identity so it's stable within and across sessions using that persona — real hardware doesn't change its canvas hash mid-visit.
-- **GeoIP-matched timezone/locale/geolocation** — When `proxy` is set and `geo_match=True` (default), the proxy's exit IP is resolved via a free lookup and used to set the browser context's `timezone_id`, `locale`, and `geolocation`, so the proxy's country and the browser's clock agree. Fails silently (falls back to the identity's defaults) if the lookup doesn't succeed.
+- **Optional GeoIP matching** — With `proxy` and `geo_match=True`, a lookup to `https://ipwho.is/` is sent through the proxy to set the browser context's timezone, locale, and geolocation. This discloses a connection to that third party; `geo_match=False` is the default and performs no lookup. A failed lookup falls back to identity defaults.
 - **`get(url)`** — Full Chromium navigation; returns a `BrowserResponse` with selectolax and lxml parsers already populated.
 - **Google-referrer stealth** — `via_google=True` (default) routes the initial visit through a Google search referrer, passing referrer-policy checks on many sites.
 - **Best-effort Cloudflare Turnstile handling** — `bypass_cloudflare=True` attempts to locate and click the Turnstile checkbox iframe. This is not a guaranteed solve — there is no bundled captcha-solving service.
 - **`fetch(url)`** — Uses the browser's built-in `fetch()` API to retrieve subsequent pages without full navigation (up to 97% bandwidth reduction); inherits the established session and cookies.
 - **`run(task_fn)`** — Accepts any `(driver: playwright.sync_api.Page) -> Any` callable for arbitrary browser interactions: form submission, clicking, typing, scrolling, JS execution, iframe access, CDP commands, etc.
 - **Chromium profile persistence** — `profile="my_profile"` persists the full Chromium user-data directory (via `launch_persistent_context`), or, with `tiny_profile=True`, a cookie-only lightweight variant saved as JSON.
-- **Automatic profile save-on-success** — Without an explicit `profile`, `auto_save_profile=True` (default) saves each identity's cookies locally after a `get()` call whose resulting page doesn't look blocked/challenged, and reloads them the next time that same identity launches — a working fingerprint keeps its session instead of starting cold every run.
+- **Opt-in profile save-on-success** — `auto_save_profile=False` by default: no cookie files are read or written without an explicit profile or opt-in. With `auto_save_profile=True`, a successful `get()` saves each identity's cookies in plaintext JSON under `~/.scrawlee/profiles/_auto/` and reloads them on later runs. New files are owner-only (0600); existing cookie files are not removed automatically.
 - **Driver reuse** — `reuse_driver=True` (default) keeps the Chromium instance alive between calls, eliminating per-request browser startup cost.
 - **Resource blocking** — `block_images=True` or `block_images_and_css=True` intercept requests via Playwright routing to suppress unnecessary network traffic.
 
@@ -814,9 +814,11 @@ This is useful for scraping sites that set session tokens via XHR after the DOM 
 
 #### Low-bandwidth bulk scraping with `fetch()`
 
-`fetch()` uses the browser's **native fetch API** to retrieve subsequent pages without triggering a full navigation. No new page load, no DNS resolution, no TLS handshake — only the HTTP request body is transferred. Benchmarks show up to 97% bandwidth reduction compared to repeated `get()` calls.
+`fetch()` uses the browser's **native fetch API** to retrieve subsequent pages without triggering a full navigation. It can reuse browser connections, but DNS/TLS work may still occur when a new connection is needed. It skips loading subresources for each fetched document.
 
-`fetch()` inherits the current session's cookies, CSRF tokens, and authenticated state, making it the fastest way to iterate through many pages of a logged-in site:
+`fetch()` runs in the current page and obeys browser same-origin/CORS rules. It works reliably for the navigated site's origin; cross-origin responses require that site's CORS permission. It inherits applicable session cookies, but does not automatically send CSRF tokens stored in page state. For a cross-origin GET, use `request(url)` instead: it uses Playwright's HTTP request context, shares the browser context's cookies, and is **not** an in-page/browser-network request. `request()` is unavailable when a browser proxy is configured, because that transport cannot guarantee use of the browser's proxy.
+
+For same-origin pages, `fetch()` is a low-bandwidth way to iterate through many pages of a logged-in site:
 
 ```python
 from scrawlee import BrowserClient
@@ -834,6 +836,22 @@ with BrowserClient(block_images=True) as client:
         change = resp.html.css_first('[data-testid="qsp-price-change"]').text()
         print(f"{ticker:6s}  {price:>10}  {change}")
 ```
+
+For cross-origin GETs without a browser proxy, `client.request("https://example.com/")` returns the same `BrowserResponse` type without browser CORS restrictions. Cookies are only attached to matching domains.
+
+For use inside a running event loop (including Jupyter and async web applications), use the separate async Playwright client:
+
+```python
+from scrawlee import AsyncBrowserClient
+
+async with AsyncBrowserClient(via_google=False) as client:
+    response = await client.get("https://example.com/")
+    same_origin = await client.fetch("https://example.com/another-page")
+    other_origin = await client.request("https://example.org/")
+    result = await client.run(lambda page: page.title())
+```
+
+`AsyncBrowserClient.run()` takes a callable returning an awaitable. Its `driver` is a Playwright async `Page`. Async mode does not support `bypass_cloudflare=True`.
 
 #### Arbitrary interactions with `run()`
 
@@ -918,7 +936,7 @@ with BrowserClient() as client:
 
 #### Chromium profile persistence
 
-Profiles allow you to persist authenticated state across script runs. On the first run you log in; on all subsequent runs Scrawlee picks up the saved session:
+Profiles allow you to persist authenticated state across script runs. On the first run you log in; on all subsequent runs Scrawlee picks up the saved session. Full Chromium profiles store browser state on disk; tiny profiles store cookies as plaintext JSON under `~/.scrawlee/profiles/` (owner-only permissions for newly written files). Treat both as sensitive, and avoid profiles if disk persistence is not required:
 
 ```python
 # Full profile — a persistent Chromium user-data directory.
@@ -965,14 +983,22 @@ with BrowserClient(identity="chrome_android_mobile") as client:
     print(client.identity)   # "chrome_android_mobile"
 ```
 
+`BrowserClient(impersonate=...)` is a legacy alias for `identity=...`; both must
+name the same available identity if supplied together. Unlike `ScrawleeClient`,
+`BrowserClient` only accepts the Chromium-family keys returned by
+`available_identities()`.
+
+Set `http2=False` on either HTTP client to limit curl_cffi to HTTP/1.1, or on
+either browser client to launch Chromium with HTTP/2 disabled. The default is `True`.
+
 #### GeoIP-matched timezone, locale, and geolocation
 
-When a proxy is configured, `geo_match=True` (the default) resolves that proxy's exit IP and aligns the browser's timezone/locale/`navigator.geolocation` with it — so a proxy in Germany doesn't show up next to a `Etc/UTC` clock:
+`BrowserClient` and `AsyncBrowserClient` accept one fixed `proxy` URL per browser instance; neither integrates with `ProxyManager` or rotates browser proxies. `.env.example` is only a sample: the library does not load it or interpret its `PROXY_*` keys; pass the browser proxy URL explicitly. By default `geo_match=False`: no GeoIP lookup occurs. Opt in with `geo_match=True` to query `https://ipwho.is/` **through your proxy** for its exit IP, timezone, locale, and coordinates. This contacts a third party before navigation; when the lookup fails, the identity's static defaults are used:
 
 ```python
 from scrawlee import BrowserClient
 
-with BrowserClient(proxy="http://user:pass@de-proxy-host:8080") as client:
+with BrowserClient(proxy="http://user:pass@de-proxy-host:8080", geo_match=True) as client:
     r = client.get("https://example.com")
     # The page's Intl.DateTimeFormat().resolvedOptions().timeZone will read
     # something like "Europe/Berlin" instead of the machine's real timezone.
@@ -984,18 +1010,18 @@ with BrowserClient(proxy="http://proxy-host:8080", geo_match=False) as client:
 
 #### Automatic profile save-on-success
 
-Without an explicit `profile=`, each identity still keeps its own cookie jar under `~/.scrawlee/profiles/_auto/<identity>.json`, saved automatically after any `get()` call whose response doesn't look like a block/challenge page:
+Without an explicit `profile=`, cookies stay in memory by default. Set `auto_save_profile=True` to load and save cookies in plaintext JSON under `~/.scrawlee/profiles/_auto/<identity>.json` after a `get()` call whose response doesn't look blocked. Newly written cookie files are restricted to the current user (0600), but they are **not encrypted**; disabling the option does not delete previously saved files:
 
 ```python
 from scrawlee import BrowserClient
 
 # First run: cold session, logs in via a normal flow, cookies get saved
 # automatically since the resulting page didn't look blocked.
-with BrowserClient(identity="chrome131_win_desktop") as client:
+with BrowserClient(identity="chrome131_win_desktop", auto_save_profile=True) as client:
     client.get("https://example.com/dashboard")
 
 # Later run, same identity: picks up the saved cookies automatically.
-with BrowserClient(identity="chrome131_win_desktop") as client:
+with BrowserClient(identity="chrome131_win_desktop", auto_save_profile=True) as client:
     r = client.get("https://example.com/dashboard")
 
 # Opt out entirely for a fully stateless run
@@ -1357,7 +1383,7 @@ Contributions are welcome. Please follow these steps:
    ```bash
    pytest
    ```
-5. **Open a Pull Request** against `main` with a clear description of the problem your change solves.
+5. **Open a Pull Request** against `master` with a clear description of the problem your change solves.
 
 ### Code style
 

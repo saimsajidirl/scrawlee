@@ -1,6 +1,9 @@
 from typing import Any, Optional
 from pathlib import Path
 from urllib.parse import urlparse
+import asyncio
+import os
+import tempfile
 import time
 import json
 
@@ -21,6 +24,33 @@ _BLOCK_MARKERS = (
     "cf-error-details",
     "captcha",
 )
+
+_FETCH_SCRIPT = """async (args) => {
+    try {
+        const response = await fetch(args.url, {
+            credentials: args.includeCredentials ? 'include' : 'omit',
+            headers: args.headers || {},
+        });
+        const text = await response.text();
+        return { text: text, status: response.status, error: null };
+    } catch (error) {
+        return { text: '', status: null, error: String(error) };
+    }
+}"""
+
+
+def _write_cookie_file(path: Path, cookies: Any) -> None:
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as file:
+            temporary_path = Path(file.name)
+            json.dump(cookies, file)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 class BrowserResponse:
@@ -99,11 +129,6 @@ class BrowserResponse:
 
 
 class BrowserClient:
-
-    # Kept for backward compatibility with code that reads `.impersonate`;
-    # BrowserClient's actual fingerprint persona comes from `identity`
-    # instead (see scrawlee.fingerprints), which is restricted to
-    # Chromium-family personas for the reasons documented there.
     STEALTH_BROWSERS = fingerprints.identity_names()
 
     def __init__(
@@ -120,8 +145,8 @@ class BrowserClient:
         impersonate: str = "random",
         identity: Optional[str] = None,
         stealth: bool = True,
-        geo_match: bool = True,
-        auto_save_profile: bool = True,
+        geo_match: bool = False,
+        auto_save_profile: bool = False,
         http2: bool = True,
         wait: int = 0,
     ):
@@ -146,8 +171,14 @@ class BrowserClient:
         self.http2 = http2
         self.wait = wait
 
+        if impersonate != "random":
+            if identity is not None and identity != impersonate:
+                raise ValueError("impersonate and identity must refer to the same browser identity")
+            identity = impersonate
+        if identity is not None and identity not in self.STEALTH_BROWSERS:
+            raise ValueError(f"Unknown browser identity {identity!r}; choose from {self.STEALTH_BROWSERS}")
         self._identity = fingerprints.pick_identity(identity)
-        self.impersonate = self._identity.key if impersonate == "random" else impersonate
+        self.impersonate = self._identity.key
 
         self._playwright = None
         self._browser = None
@@ -202,19 +233,21 @@ class BrowserClient:
         else:
             route.continue_()
 
-    def _profile_dir(self) -> Path:
+    @staticmethod
+    def _profiles_base() -> Path:
         base = Path.home() / ".scrawlee" / "profiles"
-        base.mkdir(parents=True, exist_ok=True)
-        return base / self.profile
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return base
+
+    def _profile_dir(self) -> Path:
+        return self._profiles_base() / self.profile
 
     def _tiny_profile_path(self) -> Path:
-        base = Path.home() / ".scrawlee" / "profiles"
-        base.mkdir(parents=True, exist_ok=True)
-        return base / f"{self.profile}.tiny.json"
+        return self._profiles_base() / f"{self.profile}.tiny.json"
 
     def _auto_profile_path(self) -> Path:
-        base = Path.home() / ".scrawlee" / "profiles" / "_auto"
-        base.mkdir(parents=True, exist_ok=True)
+        base = self._profiles_base() / "_auto"
+        base.mkdir(mode=0o700, exist_ok=True)
         return base / f"{self._identity.key}.json"
 
     def _load_cookies(self, path: Path) -> None:
@@ -229,7 +262,7 @@ class BrowserClient:
 
     def _save_cookies(self, path: Path) -> None:
         try:
-            path.write_text(json.dumps(self._context.cookies()), encoding="utf-8")
+            _write_cookie_file(path, self._context.cookies())
         except Exception:
             logger.debug("Failed to save cookies to {}", path)
 
@@ -250,32 +283,13 @@ class BrowserClient:
         except Exception:
             return False
 
-    def _ensure_driver(self):
-        """
-        Lazily launches the Playwright Chromium instance.
-        Reuses the existing page when reuse_driver is enabled.
-        Returns the live Playwright Page for navigation.
-        """
-        if self.reuse_driver and self._page is not None:
-            return self._page
-        if self._page is not None:
-            self._close_driver()
-
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError as exc:
-            raise ImportError(
-                "playwright is required for BrowserClient. Install it with "
-                "'pip install playwright' and then run 'playwright install chromium'."
-            ) from exc
-
-        self._playwright = sync_playwright().start()
-
+    def _browser_options(self, geo):
         launch_kwargs: dict = {"headless": self.headless}
+        if not self.http2:
+            launch_kwargs["args"] = ["--disable-http2"]
         if self.proxy:
             launch_kwargs["proxy"] = self._build_proxy_config(self.proxy)
 
-        geo = geoip.resolve_geo(self.proxy) if (self.proxy and self.geo_match) else None
         identity = self._identity
 
         context_kwargs: dict = {
@@ -299,6 +313,31 @@ class BrowserClient:
                 "longitude": geo["longitude"],
             }
             context_kwargs["permissions"] = ["geolocation"]
+        return launch_kwargs, context_kwargs
+
+    def _ensure_driver(self):
+        """
+        Lazily launches the Playwright Chromium instance.
+        Reuses the existing page when reuse_driver is enabled.
+        Returns the live Playwright Page for navigation.
+        """
+        if self.reuse_driver and self._page is not None:
+            return self._page
+        if self._page is not None:
+            self._close_driver()
+
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise ImportError(
+                "playwright is required for BrowserClient. Install it with "
+                "'pip install playwright' and then run 'playwright install chromium'."
+            ) from exc
+
+        self._playwright = sync_playwright().start()
+        geo = geoip.resolve_geo(self.proxy) if (self.proxy and self.geo_match) else None
+        launch_kwargs, context_kwargs = self._browser_options(geo)
+        identity = self._identity
 
         if self.profile and not self.tiny_profile:
             user_data_dir = str(self._profile_dir())
@@ -462,7 +501,9 @@ class BrowserClient:
     ) -> BrowserResponse:
         """
         Fetches the target URL via the browser's native fetch API.
-        Reuses the current page's cookies and session state.
+        Reuses the current page's applicable cookies and session state.
+        Cross-origin requests need CORS permission from the target; use
+        request() for cross-origin GETs without a configured browser proxy.
         Catches network/CORS failures in-page so a blocked or rejected
         request surfaces as a normal ConnectionError instead of an
         uncaught Playwright protocol error.
@@ -470,23 +511,23 @@ class BrowserClient:
         """
         page = self._ensure_driver()
         result = page.evaluate(
-            """async (args) => {
-                try {
-                    const response = await fetch(args.url, {
-                        credentials: args.includeCredentials ? 'include' : 'omit',
-                        headers: args.headers || {},
-                    });
-                    const text = await response.text();
-                    return { text: text, status: response.status, error: null };
-                } catch (error) {
-                    return { text: '', status: null, error: String(error) };
-                }
-            }""",
+            _FETCH_SCRIPT,
             {"url": url, "headers": headers or {}, "includeCredentials": include_credentials},
         )
         if result["error"]:
             raise ConnectionError(f"Browser fetch to {url} failed: {result['error']}")
         return BrowserResponse(result["text"], url, result["status"])
+
+    def request(self, url: str, headers: Optional[dict] = None) -> BrowserResponse:
+        """
+        Sends a GET through Playwright's HTTP request context without page CORS rules.
+        Shares the browser context's cookies, but not its in-page fetch behavior.
+        """
+        if self.proxy:
+            raise ValueError("request() cannot guarantee the browser proxy; use fetch() on the current origin")
+        self._ensure_driver()
+        response = self._context.request.get(url, headers=headers)
+        return BrowserResponse(response.text(), response.url, response.status)
 
     def run(self, task_fn) -> Any:
         """
@@ -525,3 +566,224 @@ class BrowserClient:
         Releases all held resources automatically safely.
         """
         self.close()
+
+
+class AsyncBrowserClient(BrowserClient):
+    async def _load_cookies(self, path: Path) -> None:
+        if not path.exists():
+            return
+        try:
+            cookies = json.loads(path.read_text(encoding="utf-8"))
+            if cookies:
+                await self._context.add_cookies(cookies)
+        except Exception:
+            logger.debug("Failed to load cookies from {}", path)
+
+    async def _save_cookies(self, path: Path) -> None:
+        try:
+            _write_cookie_file(path, await self._context.cookies())
+        except Exception:
+            logger.debug("Failed to save cookies to {}", path)
+
+    async def _looks_blocked(self, page) -> bool:
+        try:
+            title = (await page.title() or "").lower()
+            if any(marker in title for marker in _BLOCK_MARKERS):
+                return True
+            snippet = (await page.evaluate(
+                "document.body ? document.body.innerText.slice(0, 500) : ''"
+            )).lower()
+            return any(marker in snippet for marker in _BLOCK_MARKERS)
+        except Exception:
+            return False
+
+    @staticmethod
+    async def _route_block_images(route) -> None:
+        if route.request.resource_type == "image":
+            await route.abort()
+        else:
+            await route.continue_()
+
+    @staticmethod
+    async def _route_block_images_and_css(route) -> None:
+        if route.request.resource_type in ("image", "stylesheet", "font"):
+            await route.abort()
+        else:
+            await route.continue_()
+
+    async def _ensure_driver(self):
+        if self.reuse_driver and self._page is not None:
+            return self._page
+        if self._page is not None:
+            await self._close_driver()
+
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            raise ImportError(
+                "playwright is required for AsyncBrowserClient. Install it with "
+                "'pip install playwright' and then run 'playwright install chromium'."
+            ) from exc
+
+        self._playwright = await async_playwright().start()
+        loop = asyncio.get_running_loop()
+        geo = await loop.run_in_executor(None, geoip.resolve_geo, self.proxy) if (self.proxy and self.geo_match) else None
+        launch_kwargs, context_kwargs = self._browser_options(geo)
+
+        if self.profile and not self.tiny_profile:
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                str(self._profile_dir()), **launch_kwargs, **context_kwargs
+            )
+            self._browser = None
+        else:
+            self._browser = await self._playwright.chromium.launch(**launch_kwargs)
+            self._context = await self._browser.new_context(**context_kwargs)
+            if self.profile and self.tiny_profile:
+                await self._load_cookies(self._tiny_profile_path())
+            elif not self.profile and self.auto_save_profile:
+                await self._load_cookies(self._auto_profile_path())
+
+        if self.stealth:
+            await self._context.add_init_script(build_stealth_script(self._identity))
+        if self.block_images_and_css:
+            await self._context.route("**/*", self._route_block_images_and_css)
+        elif self.block_images:
+            await self._context.route("**/*", self._route_block_images)
+
+        self._page = await self._context.new_page()
+        self._driver = self._page
+        logger.debug(
+            "AsyncBrowserClient launched Chromium via Playwright (identity={}, headless={})",
+            self.identity,
+            self.headless,
+        )
+        return self._page
+
+    async def _close_driver(self) -> None:
+        if self.profile and self.tiny_profile and self._context is not None:
+            await self._save_cookies(self._tiny_profile_path())
+        for closable in (self._context, self._browser):
+            if closable is not None:
+                try:
+                    await closable.close()
+                except Exception:
+                    pass
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
+        self._driver = None
+
+    async def attempt_cloudflare_bypass(self, page, timeout: int = 15000) -> None:
+        raise NotImplementedError("Cloudflare bypass is not supported by AsyncBrowserClient")
+
+    async def get(
+        self,
+        url: str,
+        via_google: Optional[bool] = None,
+        bypass_cloudflare: Optional[bool] = None,
+        wait: Optional[int] = None,
+        poll_for_cookie: Optional[str] = None,
+        poll_interval: float = 1.0,
+        poll_stable: int = 2,
+    ) -> BrowserResponse:
+        """Navigates with the async Playwright page and returns a parsed response."""
+        if bypass_cloudflare or (bypass_cloudflare is None and self.bypass_cloudflare):
+            raise NotImplementedError("Cloudflare bypass is not supported by AsyncBrowserClient")
+        use_google = via_google if via_google is not None else self.via_google
+        wait_time = wait if wait is not None else self.wait
+
+        async def _task(page):
+            if use_google:
+                try:
+                    await page.goto("https://www.google.com/", wait_until="domcontentloaded")
+                except Exception:
+                    pass
+                await page.goto(url, wait_until="domcontentloaded", referer="https://www.google.com/")
+            else:
+                await page.goto(url, wait_until="domcontentloaded")
+
+            if wait_time:
+                if poll_for_cookie:
+                    last_value = None
+                    stable_count = 0
+                    elapsed = 0.0
+                    while elapsed < wait_time:
+                        cookies = {c["name"]: c["value"] for c in await page.context.cookies()}
+                        current_value = cookies.get(poll_for_cookie)
+                        if current_value is not None and current_value == last_value:
+                            stable_count += 1
+                            if stable_count >= poll_stable:
+                                logger.debug(
+                                    "Cookie '{}' stable after {:.1f}s, stopping wait",
+                                    poll_for_cookie,
+                                    elapsed,
+                                )
+                                break
+                        else:
+                            stable_count = 1 if current_value is not None else 0
+                            last_value = current_value
+                        await asyncio.sleep(poll_interval)
+                        elapsed += poll_interval
+                else:
+                    await asyncio.sleep(wait_time)
+
+            if not self.profile and self.auto_save_profile:
+                if not await self._looks_blocked(page):
+                    await self._save_cookies(self._auto_profile_path())
+                else:
+                    logger.debug("Page looks blocked; skipping auto profile save")
+            return BrowserResponse(await page.content(), page.url)
+
+        return await self.run(_task)
+
+    async def fetch(
+        self,
+        url: str,
+        headers: Optional[dict] = None,
+        include_credentials: bool = True,
+    ) -> BrowserResponse:
+        """Fetches in-page; cross-origin requests remain subject to CORS."""
+        page = await self._ensure_driver()
+        result = await page.evaluate(
+            _FETCH_SCRIPT,
+            {"url": url, "headers": headers or {}, "includeCredentials": include_credentials},
+        )
+        if result["error"]:
+            raise ConnectionError(f"Browser fetch to {url} failed: {result['error']}")
+        return BrowserResponse(result["text"], url, result["status"])
+
+    async def request(self, url: str, headers: Optional[dict] = None) -> BrowserResponse:
+        """Sends a GET through the context's HTTP client without page CORS rules."""
+        if self.proxy:
+            raise ValueError("request() cannot guarantee the browser proxy; use fetch() on the current origin")
+        await self._ensure_driver()
+        response = await self._context.request.get(url, headers=headers)
+        return BrowserResponse(await response.text(), response.url, response.status)
+
+    async def run(self, task_fn) -> Any:
+        """Runs an async callable with the async Playwright page."""
+        page = await self._ensure_driver()
+        try:
+            self._last_result = await task_fn(page)
+        finally:
+            if not self.reuse_driver:
+                await self._close_driver()
+        return self._last_result
+
+    async def close(self) -> None:
+        await self._close_driver()
+
+    def __enter__(self):
+        raise TypeError("Use 'async with' for AsyncBrowserClient")
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
