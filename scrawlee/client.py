@@ -3,7 +3,7 @@ import random
 import asyncio
 import json
 from typing import Optional, Dict, Any, Iterable, Tuple, Type
-from curl_cffi import requests
+from curl_cffi import CurlHttpVersion, requests
 from selectolax.parser import HTMLParser
 from lxml import html as lxml_html
 from loguru import logger
@@ -141,7 +141,8 @@ class ScrawleeClient:
             impersonate=self.impersonate,
             timeout=self.timeout,
             verify=self.verify,
-            allow_redirects=self.allow_redirects
+            allow_redirects=self.allow_redirects,
+            http_version=CurlHttpVersion.V2_0 if self.http2 else CurlHttpVersion.V1_1
         )
         self._generate_dynamic_headers()
 
@@ -414,7 +415,8 @@ class AsyncScrawleeClient:
             impersonate=self.impersonate,
             timeout=self.timeout,
             verify=self.verify,
-            allow_redirects=self.allow_redirects
+            allow_redirects=self.allow_redirects,
+            http_version=CurlHttpVersion.V2_0 if self.http2 else CurlHttpVersion.V1_1
         )
         self._generate_dynamic_headers()
 

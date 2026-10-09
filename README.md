@@ -814,9 +814,11 @@ This is useful for scraping sites that set session tokens via XHR after the DOM 
 
 #### Low-bandwidth bulk scraping with `fetch()`
 
-`fetch()` uses the browser's **native fetch API** to retrieve subsequent pages without triggering a full navigation. No new page load, no DNS resolution, no TLS handshake — only the HTTP request body is transferred. Benchmarks show up to 97% bandwidth reduction compared to repeated `get()` calls.
+`fetch()` uses the browser's **native fetch API** to retrieve subsequent pages without triggering a full navigation. It can reuse browser connections, but DNS/TLS work may still occur when a new connection is needed. It skips loading subresources for each fetched document.
 
-`fetch()` inherits the current session's cookies, CSRF tokens, and authenticated state, making it the fastest way to iterate through many pages of a logged-in site:
+`fetch()` runs in the current page and obeys browser same-origin/CORS rules. It works reliably for the navigated site's origin; cross-origin responses require that site's CORS permission. It inherits applicable session cookies, but does not automatically send CSRF tokens stored in page state. For a cross-origin GET, use `request(url)` instead: it uses Playwright's HTTP request context, shares the browser context's cookies, and is **not** an in-page/browser-network request. `request()` is unavailable when a browser proxy is configured, because that transport cannot guarantee use of the browser's proxy.
+
+For same-origin pages, `fetch()` is a low-bandwidth way to iterate through many pages of a logged-in site:
 
 ```python
 from scrawlee import BrowserClient
@@ -834,6 +836,22 @@ with BrowserClient(block_images=True) as client:
         change = resp.html.css_first('[data-testid="qsp-price-change"]').text()
         print(f"{ticker:6s}  {price:>10}  {change}")
 ```
+
+For cross-origin GETs without a browser proxy, `client.request("https://example.com/")` returns the same `BrowserResponse` type without browser CORS restrictions. Cookies are only attached to matching domains.
+
+For use inside a running event loop (including Jupyter and async web applications), use the separate async Playwright client:
+
+```python
+from scrawlee import AsyncBrowserClient
+
+async with AsyncBrowserClient(via_google=False) as client:
+    response = await client.get("https://example.com/")
+    same_origin = await client.fetch("https://example.com/another-page")
+    other_origin = await client.request("https://example.org/")
+    result = await client.run(lambda page: page.title())
+```
+
+`AsyncBrowserClient.run()` takes a callable returning an awaitable. Its `driver` is a Playwright async `Page`. Async mode does not support `bypass_cloudflare=True`.
 
 #### Arbitrary interactions with `run()`
 
@@ -965,9 +983,17 @@ with BrowserClient(identity="chrome_android_mobile") as client:
     print(client.identity)   # "chrome_android_mobile"
 ```
 
+`BrowserClient(impersonate=...)` is a legacy alias for `identity=...`; both must
+name the same available identity if supplied together. Unlike `ScrawleeClient`,
+`BrowserClient` only accepts the Chromium-family keys returned by
+`available_identities()`.
+
+Set `http2=False` on either HTTP client to limit curl_cffi to HTTP/1.1, or on
+either browser client to launch Chromium with HTTP/2 disabled. The default is `True`.
+
 #### GeoIP-matched timezone, locale, and geolocation
 
-When a proxy is configured, `geo_match=True` (the default) resolves that proxy's exit IP and aligns the browser's timezone/locale/`navigator.geolocation` with it — so a proxy in Germany doesn't show up next to a `Etc/UTC` clock:
+`BrowserClient` and `AsyncBrowserClient` accept one fixed `proxy` URL per browser instance; neither integrates with `ProxyManager` or rotates browser proxies. When a proxy is configured, `geo_match=True` (the default) resolves that proxy's exit IP and aligns the browser's timezone/locale/`navigator.geolocation` with it — so a proxy in Germany doesn't show up next to a `Etc/UTC` clock:
 
 ```python
 from scrawlee import BrowserClient
